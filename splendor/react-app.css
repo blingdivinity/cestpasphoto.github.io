@@ -7,3 +7,58 @@ main{position:relative;z-index:1;max-width:1440px;margin:auto;padding:0 24px 70p
 @media(max-width:1050px){.game-layout{grid-template-columns:1fr}.players-column{position:static;display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.players-column>.section-heading{grid-column:1/-1}.player-panel{margin:0}.hero{min-height:180px}}
 @media(max-width:720px){.topbar{height:66px;padding:0 15px;grid-template-columns:1fr auto}.turn-pill{display:none}.brand b{font-size:.75rem}.topbar nav>button:first-child{display:none}main{padding:0 12px 45px}.hero{min-height:160px}.hero h1{font-size:2.7rem}.hero p{font-size:.72rem;max-width:260px}.hero-stat{width:88px;height:88px}.hero-stat strong{font-size:1.7rem}.game-layout{padding-top:15px}.board-panel{padding:17px 12px;border-radius:14px}.market-row{grid-template-columns:22px 53px 1fr;gap:7px}.tier-label strong{font-size:1rem}.tier-label span{display:none}.deck,.development-card{height:84px}.deck-count{font-size:.75rem}.tier-mark{font-size:1rem}.cards-row{gap:5px;overflow-x:auto}.development-card{min-width:52px}.card-top{height:28px;padding:0 5px}.card-top strong{font-size:1.1rem}.bonus{width:17px;height:17px}.card-art{inset:28px 0 0}.costs{left:3px;bottom:3px;gap:1px}.cost{width:16px;height:16px;font-size:.49rem}.noble{min-width:105px}.nobles-row{overflow-x:auto;padding-bottom:5px}.bank-row{gap:5px}.gem{height:55px}.gem-count{font-size:1.2rem}.gem-name{font-size:.37rem;letter-spacing:.04em}.action-bar{grid-template-columns:46px 1fr}.undo-button{font-size:0;padding:0;justify-content:center}.confirm-button{font-size:.68rem;padding-left:10px}.players-column{grid-template-columns:1fr;padding:16px 12px}.section-heading>span{display:none}.rules-toast{top:76px;right:12px}footer{padding:0 16px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+
+/* High-contrast development costs */
+.development-card:not(.compact) .costs{
+  left:6px;
+  right:6px;
+  bottom:6px;
+  gap:4px;
+  padding:4px;
+  width:max-content;
+  max-width:calc(100% - 12px);
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:999px;
+  background:rgba(5,7,6,.72);
+  box-shadow:0 4px 12px rgba(0,0,0,.55);
+  backdrop-filter:blur(5px);
+}
+.development-card:not(.compact) .cost{
+  width:25px;
+  height:25px;
+  flex:0 0 25px;
+  border:2px solid rgba(255,255,255,.82);
+  font-size:.78rem;
+  line-height:1;
+  text-shadow:0 1px 2px #000,0 0 3px #000;
+  box-shadow:0 2px 5px #000,inset 0 0 0 1px rgba(0,0,0,.25);
+}
+.development-card:not(.compact) .cost-0,
+.development-card:not(.compact) .cost-5{
+  color:#111713;
+  font-weight:800;
+  text-shadow:none;
+  -webkit-font-smoothing:auto;
+}
+@media(max-width:720px){
+  .cards-row{
+    grid-template-columns:repeat(4,minmax(52px,1fr));
+  }
+  .development-card:not(.compact) .costs{
+    left:3px;
+    right:auto;
+    bottom:3px;
+    display:grid;
+    grid-template-columns:repeat(2,22px);
+    gap:2px;
+    padding:2px;
+    max-width:50px;
+  }
+  .development-card:not(.compact) .cost{
+    width:22px;
+    height:22px;
+    flex-basis:22px;
+    border-width:2px;
+    font-size:.75rem;
+  }
+}
