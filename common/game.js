@@ -13,6 +13,7 @@ document.addEventListener('alpine:init', () => {
         isLoading: true,
         isThinking: false,
         isReplayingAIAction: false,
+        isTimelinePaused: false,
         loadingMessage: "Initializing Application...",
         arePlayersHuman: Array.from({ length: numPlayers }, (_, i) => i === 0),
         
@@ -35,6 +36,7 @@ document.addEventListener('alpine:init', () => {
         // Generic action router: replaces legacy clickCell
         async act(actionName, ...args) {
             if (this.isLoading || this.isThinking || this.isReplayingAIAction || this.gameEnded || !this.arePlayersHuman[this.currentPlayer]) return;
+            this.isTimelinePaused = false;
             
             try {
                 let json = pyProxy.handle_action(actionName, ...args);
@@ -46,12 +48,19 @@ document.addEventListener('alpine:init', () => {
 
         toggleEdit() { handle_edit_toggle() },
         reset() { handle_reset() },
+        rewind(offset) { return handle_rewind(offset) },
+        resumeTimeline() {
+            this.isTimelinePaused = false;
+            persist_game_state();
+            check_ai_turn();
+        },
         changeDifficulty() {
             pyProxy.changeDifficulty(this.numMCTSSims);
             persist_game_state();
         },
         setGameMode(value) {
             cancel_ai_handoff();
+            this.isTimelinePaused = false;
             const modes = {
                 'P0':    Array.from({ length: numPlayers }, (_, i) => i === 0),
                 'P1':    Array.from({ length: numPlayers }, (_, i) => i === 1),
@@ -147,6 +156,7 @@ for filename_in, filename_out in files:
                 if (savedUI?.arePlayersHuman?.length === numPlayers) {
                     Alpine.store('game').arePlayersHuman = savedUI.arePlayersHuman;
                 }
+                Alpine.store('game').isTimelinePaused = Boolean(savedUI?.isTimelinePaused);
                 if (savedUI?.numMCTSSims) {
                     Alpine.store('game').numMCTSSims = savedUI.numMCTSSims;
                     pyProxy.changeDifficulty(savedUI.numMCTSSims);
@@ -181,6 +191,7 @@ function persist_game_state() {
         localStorage.setItem(`${persistenceKey}-ui`, JSON.stringify({
             arePlayersHuman: store.arePlayersHuman,
             numMCTSSims: store.numMCTSSims,
+            isTimelinePaused: store.isTimelinePaused,
         }));
     } catch (error) {
         console.warn("Game state could not be saved:", error);
@@ -190,11 +201,14 @@ function persist_game_state() {
 let lastScheduledActionEventId = null;
 let aiHandoffTimer = null;
 let aiHandoffGeneration = 0;
+let aiTurnTimer = null;
 
 function cancel_ai_handoff() {
     aiHandoffGeneration += 1;
     clearTimeout(aiHandoffTimer);
     aiHandoffTimer = null;
+    clearTimeout(aiTurnTimer);
+    aiTurnTimer = null;
     const store = Alpine.store('game');
     if (store?.isReplayingAIAction) store.isThinking = false;
     if (store) store.isReplayingAIAction = false;
@@ -219,10 +233,8 @@ function update_store(jsonString) {
     persist_game_state();
 
     const actionEvent = store.extra?.action_event;
-    const isNewAIAction = actionEvent
-        && actionEvent.id !== lastScheduledActionEventId
-        && store.arePlayersHuman[actionEvent.actor] === false;
-    if (isNewAIAction) {
+    const isNewAction = actionEvent && actionEvent.id !== lastScheduledActionEventId;
+    if (isNewAction) {
         cancel_ai_handoff();
         lastScheduledActionEventId = actionEvent.id;
         store.isReplayingAIAction = true;
@@ -248,12 +260,27 @@ async function handle_reset() {
     const store = Alpine.store('game');
     if (store.isLoading || (store.isThinking && !store.isReplayingAIAction)) return;
     cancel_ai_handoff();
+    store.isTimelinePaused = false;
     try {
         const sims = (typeof numMCTSSims !== 'undefined') ? numMCTSSims : 50;
         let json = pyProxy.init_game(sims);
         update_store(json);
     } catch (e) {
         console.error("Reset Error:", e);
+    }
+}
+
+async function handle_rewind(offset) {
+    const store = Alpine.store('game');
+    if (store.isLoading || (store.isThinking && !store.isReplayingAIAction)) return;
+    cancel_ai_handoff();
+    store.isTimelinePaused = true;
+    try {
+        const json = pyProxy.handle_action("rewind_to", Number(offset));
+        update_store(json);
+    } catch (e) {
+        store.isTimelinePaused = false;
+        console.error("Rewind Error:", e);
     }
 }
 
@@ -275,16 +302,20 @@ async function handle_edit_toggle() {
 
 async function check_ai_turn() {
     const store = Alpine.store('game');
-    if (store.gameEnded || store.editMode !== 0) return;
+    if (store.gameEnded || store.editMode !== 0 || store.isTimelinePaused) return;
     
     if (!is_nextplayer_human()) {
-        setTimeout(() => execute_ai_move(), 0);
+        clearTimeout(aiTurnTimer);
+        aiTurnTimer = setTimeout(() => {
+            aiTurnTimer = null;
+            execute_ai_move();
+        }, 0);
     }
 }
 
 async function execute_ai_move() {
     const store = Alpine.store('game');
-    if (store.isThinking || store.isReplayingAIAction || is_nextplayer_human()) return;
+    if (store.isThinking || store.isReplayingAIAction || store.isTimelinePaused || is_nextplayer_human()) return;
 
     store.statusMessage = "AI is thinking...";
     store.isThinking = true;

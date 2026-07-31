@@ -4,6 +4,14 @@ const html = htm.bind(React.createElement);
 const GEM_NAMES = ['Diamond', 'Sapphire', 'Emerald', 'Ruby', 'Onyx', 'Gold'];
 const TIER_NAMES = ['I', 'II', 'III'];
 
+const MOVE_NAMES = {
+  buy: 'Purchased development',
+  reserve: 'Reserved development',
+  gems: 'Collected gems',
+  return: 'Returned gems',
+  pass: 'Passed'
+};
+
 function useGameStore() {
   const [store, setStore] = useState(null);
   const [, render] = useState(0);
@@ -20,6 +28,8 @@ function useGameStore() {
           isLoading: game.isLoading,
           isThinking: game.isThinking,
           loadingMessage: game.loadingMessage,
+          isReplayingAIAction: game.isReplayingAIAction,
+          isTimelinePaused: game.isTimelinePaused,
           players: game.arePlayersHuman,
           currentPlayer: game.currentPlayer,
           gameEnded: game.gameEnded,
@@ -49,6 +59,17 @@ function useGameStore() {
 const safe = value => value || [];
 const selected = (extra, type, predicate = () => true) => extra?.sel_type === type && predicate(extra.sel_items || []);
 const lastAction = (extra, type, predicate = () => true) => extra?.last_action?.[0] === type && predicate(extra.last_action?.[1]);
+const isSubset = (items, option) => items.every((item, index) => {
+  const before = items.slice(0, index).filter(value => value === item).length;
+  return option.filter(value => value === item).length > before;
+});
+const canExtendTokenSelection = (items, color, options, goldIsSingle = false) => {
+  if (goldIsSingle && color === 5) return options.some(option => option.length === 1 && option[0] === 5);
+  const occurrences = items.filter(item => item === color).length;
+  if (occurrences && items.length > 1) return true;
+  const candidate = occurrences ? [color, color] : [...items, color];
+  return options.some(option => candidate.length <= option.length && isSubset(candidate, option));
+};
 
 function Icon({ name, size = 20 }) {
   const icons = {
@@ -58,18 +79,19 @@ function Icon({ name, size = 20 }) {
     reset: html`<path d="M20 6v5h-5M20 11a8 8 0 10-.8 5"/>`,
     settings: html`<path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM19.4 15a1.7 1.7 0 00.3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.6v.2h-4V21a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 00.3-1.9A1.7 1.7 0 003 14H2.8v-4H3a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 001.9.3A1.7 1.7 0 0010 3v-.2h4V3a1.7 1.7 0 001 1.6 1.7 1.7 0 001.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 00-.3 1.9 1.7 1.7 0 001.6 1h.2v4H21a1.7 1.7 0 00-1.6 1z"/>`,
     user: html`<path d="M20 21a8 8 0 00-16 0M12 13a5 5 0 100-10 5 5 0 000 10z"/>`,
-    bot: html`<path d="M12 2v3M8 2h8M5 8h14v11H5zM2 11h3M19 11h3M9 13h.01M15 13h.01M9 17h6"/>`
+    bot: html`<path d="M12 2v3M8 2h8M5 8h14v11H5zM2 11h3M19 11h3M9 13h.01M15 13h.01M9 17h6"/>`,
+    history: html`<path d="M3 12a9 9 0 109-9 9.7 9.7 0 00-6.7 2.7L3 8M3 3v5h5M12 7v5l3 2"/>`
   };
   return html`<svg className="icon" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 }
 
-function Gem({ index, count, compact = false, active = '', recent = false, onClick }) {
-  return html`<button className=${`gem gem-${index} ${compact ? 'gem-compact' : ''} ${active ? `is-${active}` : ''} ${recent ? 'is-recent' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${count} ${GEM_NAMES[index]} gems`}>
+function Gem({ index, count, compact = false, active = '', recent = false, arrival = false, onClick }) {
+  return html`<button className=${`gem gem-${index} ${compact ? 'gem-compact' : ''} ${active ? `is-${active}` : ''} ${recent ? 'is-recent' : ''} ${arrival ? 'inventory-arrival' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${count} ${GEM_NAMES[index]} gems${onClick ? ', select to return' : ''}`}>
     <span className="gem-shine"></span><span className="gem-count">${count}</span><span className="gem-name">${GEM_NAMES[index]}</span>
   </button>`;
 }
 
-function Card({ card, tier, index, extra, compact = false, onClick }) {
+function Card({ card, tier, index, extra, compact = false, arrival = false, onClick }) {
   if (!card || card[0] < 0) return html`<div className=${`development-card card-empty ${compact ? 'compact' : ''}`}></div>`;
   const [color, points, costs] = card;
   const isMarket = tier >= 0;
@@ -78,7 +100,7 @@ function Card({ card, tier, index, extra, compact = false, onClick }) {
   const recent = isMarket
     ? (lastAction(extra, 'card', value => value === tier * 4 + index) || lastAction(extra, 'rsv', value => value === tier * 4 + index))
     : lastAction(extra, 'buyrsv', value => value === index);
-  return html`<button className=${`development-card color-${color} ${compact ? 'compact' : ''} ${isBuy ? 'is-buy' : ''} ${isReserve ? 'is-reserve' : ''} ${recent ? 'is-recent' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${GEM_NAMES[color]} card worth ${points} points`}>
+  return html`<button className=${`development-card color-${color} ${compact ? 'compact' : ''} ${isBuy ? 'is-buy' : ''} ${isReserve ? 'is-reserve' : ''} ${recent ? 'is-recent' : ''} ${arrival ? 'inventory-arrival' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${GEM_NAMES[color]} card worth ${points} points`}>
     <span className="card-glow"></span>
     <span className="card-top"><strong>${points || ''}</strong><span className=${`bonus bonus-${color}`}></span></span>
     <span className="card-art"><span></span></span>
@@ -100,8 +122,8 @@ function MarketCard({ card, tier, index, extra, focused, inspect, act, replay })
   </div>`;
 }
 
-function Noble({ noble, index }) {
-  return html`<div className="noble" style=${{ '--delay': `${index * 70}ms` }}>
+function Noble({ noble, index, arrival = false }) {
+  return html`<div className=${`noble ${arrival ? 'inventory-arrival' : ''}`} style=${{ '--delay': `${index * 70}ms` }}>
     <span className="noble-portrait"><${Icon} name="crown" size=${17}/></span>
     <span className="noble-points">3</span>
     <span className="noble-costs">${safe(noble).map(([idx, amount]) => html`<span key=${idx} className=${`mini-cost cost-${idx}`}>${amount}</span>`)}</span>
@@ -110,7 +132,7 @@ function Noble({ noble, index }) {
 
 function Deck({ tier, count, active, recent, onClick, replay }) {
   const isAISource = replay?.type === 'reserve' && replay.tier === tier && replay.index === -1;
-  return html`<button className=${`deck tier-${tier} ${active ? 'is-active' : ''} ${recent ? 'is-recent' : ''} ${isAISource ? 'ai-deck-pulse' : ''}`} onClick=${onClick}>
+  return html`<button className=${`deck tier-${tier} ${active ? 'is-active' : ''} ${recent ? 'is-recent' : ''} ${isAISource ? 'ai-deck-pulse' : ''}`} onClick=${onClick} disabled=${!onClick}>
     <span className="deck-pattern"></span><span className="tier-mark">${TIER_NAMES[tier]}</span><span className="deck-count">${count}<small>cards</small></span>
   </button>`;
 }
@@ -121,16 +143,29 @@ function PlayerPanel({ player, index, game, inspectReserved, replay }) {
   const reservedCards = safe(player.reserved).map((card, cardIndex) => ({ card, cardIndex })).filter(item => item.card?.[0] >= 0);
   const isThinking = current && !human && game.isThinking && !game.isReplayingAIAction;
   const isActing = replay?.actor === index;
-  return html`<article className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''}`}>
+  const overflow = current && (game.extra?.overflow_count || 0) > 0;
+  const returnSelection = selected(game.extra, 'gemback') ? safe(game.extra.sel_items) : [];
+  const returnOptions = safe(game.extra?.return_options);
+  const canReturn = (color, count) => overflow && human && count > 0 && canExtendTokenSelection(returnSelection, color, returnOptions, true);
+  const arrivingGems = isActing ? safe(replay?.arriving_gems) : [];
+  const arrivingBonus = isActing && replay?.type === 'buy' ? replay.card?.[0] : -1;
+  const arrivingReserved = isActing && replay?.type === 'reserve' ? replay.reserved_index : -1;
+  const visitorArrived = noble => isActing && safe(replay?.visitors).some(visitor => JSON.stringify(visitor) === JSON.stringify(noble));
+  return html`<article className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''} ${overflow ? 'is-returning' : ''}`}>
     <header className="player-header">
       <div className="player-avatar"><${Icon} name=${human ? 'user' : 'bot'} size=${20}/><span className="presence"></span></div>
       <div><p>${index === 0 ? 'You' : human ? `Player ${index + 1}` : `AI ${index + 1}`}</p></div>
       <div className="score"><strong>${player.points}</strong><span>prestige</span></div>
     </header>
+    ${overflow && human && html`<div className="overflow-prompt" role="status"><strong>Return ${game.extra.overflow_count} ${game.extra.overflow_count === 1 ? 'token' : 'tokens'}</strong><span>Select an eligible token below to continue your turn.</span></div>`}
     <div className="player-assets">
-      <div className="asset-row gems-owned">${safe(player.gems).map((count, idx) => html`<${Gem} key=${idx} index=${idx} count=${count} compact active=${selected(game.extra, 'gemback', items => items.includes(idx)) ? (game.extra.sel_items[0] === game.extra.sel_items[1] ? 'double' : 'active') : ''} recent=${lastAction(game.extra, 'gemback', items => items?.includes(idx)) && index === game.extra?.previous_player} onClick=${current && human && idx < 5 && count > 0 ? () => game.act('click_and_render', 'gemback', idx) : null}/>`)} </div>
-      <div className="asset-row bonuses-owned">${safe(player.cards).slice(0, 5).map((count, idx) => html`<div key=${idx} className=${`bonus-stack bonus-${idx}`}><span>${count}</span></div>`)}</div>
-      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${Card} key=${`${cardIndex}-${card}`} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra} compact onClick=${() => inspectReserved(card, index, cardIndex, current && human)}/>` )}</div>`}
+      <div className="asset-row gems-owned">${safe(player.gems).map((count, idx) => html`<${Gem} key=${idx} index=${idx} count=${count} compact arrival=${arrivingGems?.includes(idx)} active=${selected(game.extra, 'gemback', items => items.includes(idx)) ? (game.extra.sel_items[0] === game.extra.sel_items[1] ? 'double' : 'active') : ''} recent=${lastAction(game.extra, 'gemback', items => items?.includes(idx)) && index === game.extra?.previous_player} onClick=${canReturn(idx, count) ? () => game.act('click_and_render', 'gemback', idx) : null}/>`)} </div>
+      <div className="asset-row bonuses-owned">${safe(player.cards).slice(0, 5).map((count, idx) => html`<div key=${idx} className=${`bonus-stack bonus-${idx} ${arrivingBonus === idx ? 'inventory-arrival' : ''}`}><span>${count}</span></div>`)}</div>
+      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${Card} key=${`${cardIndex}-${card}`} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra} compact arrival=${cardIndex === arrivingReserved} onClick=${() => inspectReserved(card, index, cardIndex, current && human)}/>` )}</div>`}
+      ${safe(player.nobles).length > 0 && html`<div className="player-nobles" aria-label="Visitors"><span className="reserved-label">Visitors</span>${safe(player.nobles).map((noble, nobleIndex) => html`<${Noble} key=${`${nobleIndex}-${noble}`} noble=${noble} index=${nobleIndex} arrival=${visitorArrived(noble)}/>` )}</div>`}
+      ${isActing && arrivingGems.length > 0 && html`<div className="inventory-flight inventory-gem-flight" aria-hidden="true">${arrivingGems.map((color, gemIndex) => html`<i key=${`${color}-${gemIndex}`} className=${`gem-${color}`}></i>`)}</div>`}
+      ${isActing && replay?.card && ['buy', 'reserve'].includes(replay.type) && html`<div className=${`inventory-flight inventory-card-flight flight-${replay.type}`} aria-hidden="true"><${Card} card=${replay.card} tier=${-1} index=${-1} extra=${{}} compact/></div>`}
+      ${isActing && safe(replay?.visitors).length > 0 && html`<div className="inventory-flight inventory-visitor-flight" aria-hidden="true">${safe(replay.visitors).map((visitor, visitorIndex) => html`<${Noble} key=${visitorIndex} noble=${visitor} index=${visitorIndex}/>` )}</div>`}
     </div>
   </article>`;
 }
@@ -153,17 +188,11 @@ function GemBank({ open, game, start, choose, confirm, close, replay }) {
   const uniqueCount = new Set(selectedItems).size;
   const isDouble = selectedItems.length === 2 && uniqueCount === 1;
   const ready = isGemSelection && Boolean(game.extra?.can_confirm);
-  const activePlayer = game.view?.players?.[game.currentPlayer];
-  const remainingCapacity = Math.max(0, 10 - (activePlayer?.total_gems || 0));
+  const takeOptions = safe(game.extra?.take_options);
   const canChoose = color => {
-    if (color === 5) return false;
-    const occurrences = selectedItems.filter(item => item === color).length;
-    if (!open) return bank[color] > 0 && remainingCapacity > 0;
-    if (isDouble) return color === selectedItems[0];
-    if (selectedItems.length >= 3) return occurrences > 0;
-    if (occurrences && selectedItems.length > 1) return true;
-    if (occurrences) return bank[color] >= 4 && selectedItems.length + 1 <= remainingCapacity;
-    return bank[color] > 0 && selectedItems.length + 1 <= remainingCapacity;
+    if (color === 5 || game.extra?.overflow_count > 0) return false;
+    if (!open) return takeOptions.some(option => option.includes(color));
+    return canExtendTokenSelection(selectedItems, color, takeOptions);
   };
   return html`<section className=${`vertical-gem-bank ${open ? 'is-picking' : ''}`} aria-label=${open ? 'Choose gems from bank' : 'Gem bank'}>
     ${open && html`<div className="vertical-picker-head"><span><small>Current pick</small>${isDouble ? '2 matching' : `${selectedItems.length}/3 colors`}</span><button onClick=${close} aria-label="Cancel gem selection">×</button></div>`}
@@ -192,19 +221,124 @@ function ReservedCardDialog({ focus, game, choose, close }) {
   </section>`;
 }
 
-function AIActionReplay({ event }) {
+function ActionReplay({ event, game }) {
   if (!event) return null;
-  const actor = `AI ${event.actor + 1}`;
+  const human = game.arePlayersHuman?.[event.actor];
+  const actor = human ? (event.actor === 0 ? 'You' : `Player ${event.actor + 1}`) : `AI ${event.actor + 1}`;
+  const displayedGems = event.type === 'return' ? safe(event.gems) : safe(event.arriving_gems).length ? event.arriving_gems : safe(event.gems);
   return html`<div className=${`ai-action-replay replay-${event.type}`} role="status" aria-live="polite">
-    <div className="replay-actor"><span><${Icon} name="bot" size=${16}/></span><strong>${actor}</strong></div>
+    <div className="replay-actor"><span><${Icon} name=${human ? 'user' : 'bot'} size=${16}/></span><strong>${actor}</strong></div>
     <div className="replay-motion">
+      ${safe(event.visitors).length > 0 && html`<span className="replay-visitor" aria-hidden="true"><${Icon} name="crown" size=${17}/></span>`}
       ${event.card && html`<div className="replay-card" aria-hidden="true"><${Card} card=${event.card} tier=${event.tier} index=${event.index} extra=${{}} compact/></div>`}
-      ${event.gems?.length > 0 && html`<div className="replay-gems">${event.gems.map((color, index) => html`<i key=${`${color}-${index}`} className=${`gem-${color}`}></i>`)}</div>`}
+      ${displayedGems.length > 0 && html`<div className="replay-gems">${displayedGems.map((color, index) => html`<i key=${`${color}-${index}`} className=${`gem-${color}`}></i>`)}</div>`}
       ${event.type === 'reserve' && !event.card && html`<span className="replay-deck">${TIER_NAMES[event.tier] || 'I'}</span>`}
       ${event.type === 'pass' && html`<span className="replay-pass">—</span>`}
       <span className="replay-trail"><i></i><i></i><i></i></span>
     </div>
-    <b>${event.label}</b>
+    <b>${event.label}${safe(event.visitors).length > 0 ? ' · visitor arrived' : ''}</b>
+  </div>`;
+}
+
+function actorName(_game, actor) {
+  return `Player ${actor + 1}`;
+}
+
+function gemDescription(gems) {
+  const counts = safe(gems).reduce((totals, color) => {
+    totals[color] = (totals[color] || 0) + 1;
+    return totals;
+  }, {});
+  return Object.entries(counts).map(([color, count]) => `${count} ${GEM_NAMES[color] || 'unknown'}${count > 1 ? ' gems' : ' gem'}`).join(', ');
+}
+
+function cardDescription(event) {
+  if (!event.card) return event.tier >= 0 ? `Face-down tier ${TIER_NAMES[event.tier] || event.tier} development` : '';
+  const [color, points, costs] = event.card;
+  const cost = safe(costs).map(([gem, amount]) => `${amount} ${GEM_NAMES[gem] || 'unknown'}`).join(', ');
+  return [
+    event.tier >= 0 ? `Tier ${TIER_NAMES[event.tier] || event.tier}` : 'Reserved',
+    `${GEM_NAMES[color] || 'Unknown'} development`,
+    `${points || 0} prestige`,
+    cost ? `cost ${cost}` : 'free'
+  ].join(' · ');
+}
+
+function TurnHistory({ game, open, close }) {
+  const events = safe(game.extra?.turn_log);
+  const rewindDisabled = game.isThinking && !game.isReplayingAIAction;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = event => {
+      if (event.key === 'Escape') {
+        close();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const drawer = document.getElementById('turn-history-drawer');
+      const focusable = [...(drawer?.querySelectorAll('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])') || [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, close]);
+
+  useEffect(() => {
+    if (!open || !game.isTimelinePaused) return;
+    const timer = setTimeout(() => document.querySelector('.history-paused button')?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [open, game.isTimelinePaused, events.length]);
+
+  if (!open) return null;
+  return html`<div className="history-backdrop" onClick=${close}>
+    <aside id="turn-history-drawer" className="history-drawer" role="dialog" aria-modal="true" aria-labelledby="history-title" onClick=${event => event.stopPropagation()}>
+      <header className="history-header">
+        <div><span className="eyebrow">The royal record</span><h2 id="history-title">Turn history</h2></div>
+        <button className="history-close" onClick=${close} aria-label="Close turn history" autoFocus>×</button>
+      </header>
+      ${game.isTimelinePaused && html`<div className="history-paused" role="status">
+        <div><strong>Viewing earlier position</strong><span>Continue here to create a new branch.</span></div>
+        <button onClick=${() => game.resumeTimeline()}>Resume</button>
+      </div>`}
+      ${rewindDisabled && html`<p className="history-thinking" role="status">History controls are available when the AI finishes calculating.</p>`}
+      <div className="history-scroll">
+        ${events.length === 0 ? html`<div className="history-empty"><${Icon} name="history" size=${25}/><strong>No moves recorded yet</strong><p>Your completed turns will appear here.</p></div>` : html`
+          <ol className="history-list" aria-label="Moves, newest first">
+            ${events.map(event => {
+              const arrivalDetail = event.type === 'reserve' && safe(event.arriving_gems).length ? ` · Gained ${gemDescription(event.arriving_gems)}` : '';
+              const moveDetail = `${['buy', 'reserve'].includes(event.type) ? cardDescription(event) : ['gems', 'return'].includes(event.type) ? gemDescription(event.gems) : ''}${arrivalDetail}${safe(event.visitors).length ? ' · Visitor arrived' : ''}`;
+              const movesBack = Number(event.moves_back) || 0;
+              return html`<li key=${event.id} className="history-entry">
+                <div className="history-entry-head">
+                  <span className="history-actor"><${Icon} name="history" size=${14}/>${actorName(game, event.actor)}</span>
+                  <span className="history-position">${movesBack === 0 ? 'Latest move' : `${movesBack} move${movesBack === 1 ? '' : 's'} back`}</span>
+                </div>
+                <div className="history-entry-body">
+                  <strong>${event.label || MOVE_NAMES[event.type] || 'Completed a move'}</strong>
+                  <span className="history-type">${MOVE_NAMES[event.type] || event.type}</span>
+                  ${moveDetail && html`<p>${moveDetail}</p>`}
+                </div>
+                <button className="history-rewind" disabled=${rewindDisabled} onClick=${async () => {
+                  await game.rewind(event.offset);
+                  requestAnimationFrame(() => document.querySelector('.history-paused button, .history-close')?.focus());
+                }} aria-label=${`Rewind to before ${actorName(game, event.actor)} ${event.label || MOVE_NAMES[event.type] || 'made this move'}`}>
+                  <${Icon} name="undo" size=${15}/> Rewind before move
+                </button>
+              </li>`;
+            })}
+          </ol>`}
+      </div>
+    </aside>
   </div>`;
 }
 
@@ -215,32 +349,38 @@ function Loading({ game }) {
 function App() {
   const game = useGameStore();
   const [settings, setSettings] = useState(false);
+  const [history, setHistory] = useState(false);
   const [rules, setRules] = useState(false);
   const [cardFocus, setCardFocus] = useState(null);
   const [gemPicker, setGemPicker] = useState(false);
   const [reservedFocus, setReservedFocus] = useState(null);
-  const [aiReplay, setAIReplay] = useState(null);
+  const [actionReplay, setActionReplay] = useState(null);
   const view = game?.view || {};
   const extra = game?.extra || {};
+  const overflow = extra.overflow_count || 0;
   const confirmText = useMemo(() => {
     if (!game) return '';
     if (game.gameEnded) return `Player ${safe(game.winners).map(n => n + 1).join(' & ')} wins`;
+    if (overflow > 0 && extra.sel_type !== 'gemback') return `Return ${overflow} ${overflow === 1 ? 'token' : 'tokens'} to continue`;
+    if (extra.sel_type === 'gemback') return `${extra.can_confirm ? 'Return' : 'Cannot return'} ${safe(extra.sel_items).length} ${safe(extra.sel_items).length === 1 ? 'token' : 'tokens'}`;
     if (extra.sel_type === 'none') return 'Choose a card or collect gems';
+    if (extra.sel_type === 'gem') return `${extra.can_confirm ? 'Take' : 'Cannot take'} ${safe(extra.sel_items).length} ${safe(extra.sel_items).length === 1 ? 'token' : 'tokens'}`;
     return `${extra.can_confirm ? 'Confirm' : 'Cannot'} ${extra.move_desc || 'move'}`;
-  }, [game?.gameEnded, game?.winners, extra.sel_type, extra.can_confirm, extra.move_desc]);
+  }, [game?.gameEnded, game?.winners, overflow, extra.sel_type, extra.sel_items, extra.can_confirm, extra.move_desc]);
 
   useEffect(() => {
     const event = extra.action_event;
-    if (!event || game?.arePlayersHuman?.[event.actor] !== false) {
-      setAIReplay(null);
+    if (!event) {
+      setActionReplay(null);
       return;
     }
-    setAIReplay(event);
-    const timer = setTimeout(() => setAIReplay(null), globalThis.actionAnimationDuration || 1900);
+    setActionReplay(event);
+    const timer = setTimeout(() => setActionReplay(null), globalThis.actionAnimationDuration || 1900);
     return () => clearTimeout(timer);
   }, [extra.action_event?.id]);
 
   const openCardFlow = async (card, tier, index) => {
+    if (extra.overflow_count > 0) return;
     if (extra.sel_type !== 'none') await game.act('clear_selection');
     setGemPicker(false);
     setReservedFocus(null);
@@ -248,6 +388,7 @@ function App() {
   };
   const runCardAction = async mode => {
     if (!cardFocus) return;
+    if (extra.overflow_count > 0) return;
     const available = extra.card_actions?.[cardFocus.tier]?.[cardFocus.index]?.[mode];
     if (!available) return;
     await game.act('select_card_action', mode, cardFocus.tier, cardFocus.index);
@@ -255,6 +396,7 @@ function App() {
     setCardFocus(null);
   };
   const openGemPicker = async color => {
+    if (extra.overflow_count > 0) return;
     if (extra.sel_type !== 'gem') await game.act('clear_selection');
     setCardFocus(null);
     setReservedFocus(null);
@@ -271,6 +413,7 @@ function App() {
     setGemPicker(false);
   };
   const inspectReserved = async (card, playerIndex, cardIndex, canBuy) => {
+    if (extra.overflow_count > 0) return;
     if (extra.sel_type !== 'none') await game.act('clear_selection');
     setCardFocus(null);
     setGemPicker(false);
@@ -283,6 +426,10 @@ function App() {
     setReservedFocus(null);
   };
   const closeReserved = () => setReservedFocus(null);
+  const closeHistory = () => {
+    setHistory(false);
+    requestAnimationFrame(() => document.querySelector('.history-trigger')?.focus());
+  };
 
   if (!game || game.isLoading || !view.tiers) return html`<${Loading} game=${game}/>`;
   return html`<div className="app-shell">
@@ -297,24 +444,28 @@ function App() {
       <div className="game-statusbar">
         <span>Target <strong>15</strong></span>
         <span>Turn <strong>${game.currentPlayer + 1}</strong></span>
+        ${game.isTimelinePaused && html`<div className="timeline-viewing" role="status"><strong>Viewing earlier position</strong><button onClick=${() => game.resumeTimeline()}>Resume</button></div>`}
         ${game.isThinking && !game.isReplayingAIAction && html`<b>Thinking…</b>`}
+        <button className="history-trigger" onClick=${() => setHistory(true)} aria-haspopup="dialog" aria-expanded=${history} aria-controls="turn-history-drawer">
+          <${Icon} name="history" size=${16}/> History${safe(extra.turn_log).length > 0 && html`<span>${safe(extra.turn_log).length}</span>`}
+        </button>
       </div>
-      <${AIActionReplay} event=${aiReplay}/>
+      <${ActionReplay} event=${actionReplay} game=${game}/>
       <div className="table-layout">
         <aside className="players-column table-players">
           <${ReservedCardDialog} focus=${reservedFocus} game=${game} choose=${chooseReservedCard} close=${closeReserved}/>
-          ${safe(view.players).map((player, idx) => html`<${PlayerPanel} key=${idx} player=${player} index=${idx} game=${game} inspectReserved=${inspectReserved} replay=${aiReplay}/>` )}
+          ${safe(view.players).map((player, idx) => html`<${PlayerPanel} key=${idx} player=${player} index=${idx} game=${game} inspectReserved=${inspectReserved} replay=${actionReplay}/>` )}
         </aside>
         <section className="bank-column">
           <span className="column-label">Bank</span>
-          <${GemBank} open=${gemPicker} game=${game} start=${openGemPicker} choose=${color => game.act('click_and_render', 'gem', color)} confirm=${confirmGemSelection} close=${closeGemPicker} replay=${aiReplay}/>
+          <${GemBank} open=${gemPicker} game=${game} start=${openGemPicker} choose=${color => game.act('click_and_render', 'gem', color)} confirm=${confirmGemSelection} close=${closeGemPicker} replay=${actionReplay}/>
         </section>
         <section className="board-panel table-board">
           <div className="nobles-row" tabIndex="0" aria-label="Available nobles">${safe(view.nobles).map((noble, idx) => html`<${Noble} key=${idx} noble=${noble} index=${idx}/>` )}</div>
           <div className="market">${[2, 1, 0].map(tier => html`<div className="market-row" key=${tier}>
             <div className="tier-label"><strong>${TIER_NAMES[tier]}</strong></div>
-            <${Deck} tier=${tier} count=${view.decks?.[tier]} active=${selected(extra, 'deck', items => items[0] === tier)} recent=${lastAction(extra, 'deck', value => value === tier)} replay=${aiReplay} onClick=${async () => { setCardFocus(null); setGemPicker(false); setReservedFocus(null); await game.act('click_and_render', 'deck', tier); }}/>
-            <div className="cards-row">${safe(view.tiers[tier]).map((card, idx) => html`<${MarketCard} key=${idx} card=${card} tier=${tier} index=${idx} extra=${extra} focused=${cardFocus?.tier === tier && cardFocus?.index === idx} inspect=${() => openCardFlow(card, tier, idx)} act=${runCardAction} replay=${aiReplay}/>` )}</div>
+            <${Deck} tier=${tier} count=${view.decks?.[tier]} active=${selected(extra, 'deck', items => items[0] === tier)} recent=${lastAction(extra, 'deck', value => value === tier)} replay=${actionReplay} onClick=${extra.overflow_count > 0 ? null : async () => { setCardFocus(null); setGemPicker(false); setReservedFocus(null); await game.act('click_and_render', 'deck', tier); }}/>
+            <div className="cards-row">${safe(view.tiers[tier]).map((card, idx) => html`<${MarketCard} key=${idx} card=${card} tier=${tier} index=${idx} extra=${extra} focused=${extra.overflow_count > 0 ? false : cardFocus?.tier === tier && cardFocus?.index === idx} inspect=${extra.overflow_count > 0 ? null : () => openCardFlow(card, tier, idx)} act=${runCardAction} replay=${actionReplay}/>` )}</div>
           </div>`)}</div>
           <div className="action-bar"><button className="undo-button" aria-label="Undo last move" disabled=${!game.canUndo || game.isThinking} onClick=${() => game.act('undo', game.arePlayersHuman)}><${Icon} name="undo"/></button>
             <button className=${`confirm-button ${extra.can_confirm || game.gameEnded ? 'ready' : ''}`} disabled=${game.gameEnded ? false : game.isThinking || extra.sel_type === 'none' || !extra.can_confirm} onClick=${gemPicker ? confirmGemSelection : () => game.act('confirm_action')}><span>${confirmText}</span><span className="confirm-arrow">→</span></button>
@@ -323,6 +474,7 @@ function App() {
       </div>
     </main>
     <${Settings} game=${game} open=${settings} close=${() => setSettings(false)}/>
+    <${TurnHistory} game=${game} open=${history} close=${closeHistory}/>
   </div>`;
 }
 

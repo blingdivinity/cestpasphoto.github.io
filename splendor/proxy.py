@@ -1,4 +1,6 @@
+import base64
 import json
+import zlib
 import numpy as np
 from MCTS import MCTS
 from SplendorGame import SplendorGame as Game
@@ -46,17 +48,22 @@ def init_game(numMCTSSims):
     return get_render_state()
 
 def export_game_state():
-    """Serialize the active match for browser-local persistence."""
+    """Serialize the active match and its full rewind ledger compactly."""
+    history_boards = np.stack([saved_board for _, saved_board, _ in history]) if history else np.empty((0, *board.shape), dtype=board.dtype)
+    compressed_history = base64.b64encode(zlib.compress(history_boards.tobytes(), level=9)).decode("ascii")
     payload = {
-        "version": 1,
+        "version": 2,
         "num_players": int(g.num_players),
         "board": board.tolist(),
         "player": int(player),
-        "history": [
-            [int(saved_player), saved_board.tolist(), int(action)]
-            for saved_player, saved_board, action in history[:20]
-        ],
+        "history": {
+            "count": len(history),
+            "players": [int(saved_player) for saved_player, _, _ in history],
+            "actions": [int(action) for _, _, action in history],
+            "boards": compressed_history,
+        },
         "edit_mode": int(edit_mode),
+        "action_sequence": int(action_sequence),
     }
     return json.dumps(payload, separators=(",", ":"))
 
@@ -64,7 +71,8 @@ def restore_game_state(json_state):
     """Restore a previously serialized match after validating its shape."""
     global board, player, history, edit_mode, action_sequence, action_event, match_nonce
     payload = json.loads(json_state)
-    if payload.get("version") != 1 or int(payload.get("num_players", -1)) != int(g.num_players):
+    version = int(payload.get("version", 0))
+    if version not in (1, 2) or int(payload.get("num_players", -1)) != int(g.num_players):
         raise ValueError("Saved game is incompatible")
 
     expected_shape = board.shape
@@ -73,17 +81,31 @@ def restore_game_state(json_state):
         raise ValueError("Saved board shape is invalid")
 
     restored_history = []
-    for saved_player, saved_board, action in payload.get("history", []):
-        restored = np.asarray(saved_board, dtype=board.dtype)
-        if restored.shape == expected_shape:
-            restored_history.append([int(saved_player), restored, int(action)])
+    if version == 1:
+        for saved_player, saved_board, action in payload.get("history", []):
+            restored = np.asarray(saved_board, dtype=board.dtype)
+            if restored.shape == expected_shape:
+                restored_history.append([int(saved_player), restored, int(action)])
+    else:
+        packed = payload.get("history", {})
+        count = int(packed.get("count", 0))
+        players = packed.get("players", [])
+        actions = packed.get("actions", [])
+        if count < 0 or count > 10000 or len(players) != count or len(actions) != count:
+            raise ValueError("Saved history metadata is invalid")
+        raw = zlib.decompress(base64.b64decode(packed.get("boards", "")))
+        expected_bytes = count * int(np.prod(expected_shape)) * board.dtype.itemsize
+        if len(raw) != expected_bytes:
+            raise ValueError("Saved history data is invalid")
+        boards = np.frombuffer(raw, dtype=board.dtype).reshape((count, *expected_shape))
+        restored_history = [[int(players[i]), np.copy(boards[i]), int(actions[i])] for i in range(count)]
 
     g.board.copy_state(restored_board, True)
     board = g.board.get_state()
     player = int(payload["player"])
     history = restored_history
     edit_mode = int(payload.get("edit_mode", 0))
-    action_sequence = 0
+    action_sequence = max(int(payload.get("action_sequence", len(restored_history))), len(restored_history))
     action_event = None
     match_nonce = int(np.random.randint(1, 2**31))
     reset_selection()
@@ -99,10 +121,16 @@ def getNextState(action):
     # Applies a move to the board, advances the player turn, and saves history.
     global g, board, mcts, player, history, action_sequence, action_event
 
+    actor = int(player)
     action_sequence += 1
-    action_event = _describe_action_event(int(action), int(player), action_sequence)
+    action_event = _describe_action_event(int(action), actor, action_sequence)
+    previous_reserved = [np.copy(g.board.players_reserved[6*actor + i]) for i in range(6)]
+    previous_gems = np.copy(g.board.players_gems[actor])
+    previous_nobles = [np.copy(g.board.players_nobles[g.board.num_nobles * actor + i]) for i in range(g.board.num_nobles)]
     history.insert(0, [player, np.copy(board), action])
     board, player = g.getNextState(board, player, action)
+    g.board.copy_state(board, False)
+    _complete_action_event(action_event, actor, previous_reserved, previous_nobles, previous_gems)
     return get_render_state()
 
 # -------------------------------------------------------------------------
@@ -137,9 +165,9 @@ def _convertCardToJS(card_data_1, card_data_2):
     
     return [color, points, tokens]
 
-def _describe_action_event(action, actor, sequence):
-    """Capture semantic move details before the board replaces moved cards."""
-    g.board.copy_state(board, False)
+def _describe_action_event(action, actor, sequence, source_board=None):
+    """Capture semantic move details from the board immediately before a move."""
+    g.board.copy_state(board if source_board is None else source_board, False)
     event = {
         "id": f"{match_nonce}:{int(sequence)}",
         "actor": int(actor),
@@ -152,7 +180,10 @@ def _describe_action_event(action, actor, sequence):
     }
 
     if action >= 80:
-        event.update({"type": "pass", "label": "passed"})
+        if action == 80 and int(g.board.players_gems[actor].sum()) > 10:
+            event.update({"type": "return", "label": "returned gold", "gems": [5]})
+        else:
+            event.update({"type": "pass", "label": "passed"})
         return event
 
     if action < 12:
@@ -193,6 +224,53 @@ def _describe_action_event(action, actor, sequence):
 
     return event
 
+def _complete_action_event(event, actor, previous_reserved, previous_nobles, previous_gems):
+    """Attach assets that arrived in the acting player's inventory."""
+    event["arriving_gems"] = []
+    event["visitors"] = []
+    event["reserved_index"] = -1
+
+    for index in range(3):
+        row = 6 * actor + 2 * index
+        before_1, before_2 = previous_reserved[2 * index:2 * index + 2]
+        after_1, after_2 = g.board.players_reserved[row], g.board.players_reserved[row + 1]
+        if (not np.array_equal(before_1, after_1) or not np.array_equal(before_2, after_2)) and after_1.sum() > 0:
+            event["reserved_index"] = index
+            if event["type"] == "reserve" and event["card"] is None:
+                event["card"] = _convertCardToJS(after_1, after_2)
+            break
+
+    for index in range(g.board.num_nobles):
+        after = g.board.players_nobles[g.board.num_nobles * actor + index]
+        if previous_nobles[index].sum() == 0 and after.sum() > 0:
+            event["visitors"].append(_convertTokensToJS(after)[:3])
+
+    for color, delta in enumerate(g.board.players_gems[actor] - previous_gems):
+        if delta > 0:
+            event["arriving_gems"].extend([color] * int(delta))
+
+def _get_turn_log():
+    """Return newest-first semantic history while preserving the live board view."""
+    current_board = np.copy(board)
+    events = []
+    try:
+        for offset, (actor, saved_board, action) in enumerate(history):
+            actor = int(actor)
+            event = _describe_action_event(int(action), actor, action_sequence - offset, saved_board)
+            previous_reserved = [np.copy(g.board.players_reserved[6*actor + i]) for i in range(6)]
+            previous_nobles = [np.copy(g.board.players_nobles[g.board.num_nobles * actor + i]) for i in range(g.board.num_nobles)]
+            previous_gems = np.copy(g.board.players_gems[actor])
+            post_board = current_board if offset == 0 else history[offset - 1][1]
+            g.board.copy_state(post_board, False)
+            _complete_action_event(event, actor, previous_reserved, previous_nobles, previous_gems)
+            event["id"] = f"history:{offset}:{actor}:{int(action)}"
+            event["offset"] = offset
+            event["moves_back"] = offset + 1
+            events.append(event)
+    finally:
+        g.board.copy_state(current_board, False)
+    return events
+
 # -------------------------------------------------------------------------
 # Move Translation & Validation
 # -------------------------------------------------------------------------
@@ -200,6 +278,7 @@ def _describe_action_event(action, actor, sequence):
 def _get_move_index():
     # Maps internal UI selection states to exact SplendorGame action integer IDs.
     global sel_type, sel_items
+    overflow = max(0, int(g.board.players_gems[player].sum()) - 10)
     
     if sel_type == 'none' or not sel_items:
         return -1
@@ -227,15 +306,18 @@ def _get_move_index():
         return 24 + sel_items[0]
         
     elif sel_type == 'gemback':
+        if sel_items == [5]:
+            return 80 if overflow > 0 else -1
+        if 5 in sel_items:
+            return -1
         if len(sel_items) == 2 and sel_items[0] == sel_items[1]:
             return 60 + DIFFERENT_GEMS_UP_TO_2.index([sel_items[0]]) + len(DIFFERENT_GEMS_UP_TO_2)
-        else:
-            sorted_gems = sorted(sel_items)
-            try:
-                combo_index = DIFFERENT_GEMS_UP_TO_2.index(sorted_gems)
-                return 60 + combo_index 
-            except ValueError:
-                return -1
+        sorted_gems = sorted(sel_items)
+        try:
+            combo_index = DIFFERENT_GEMS_UP_TO_2.index(sorted_gems)
+            return 60 + combo_index
+        except ValueError:
+            return -1
 
     return -1
 
@@ -273,11 +355,13 @@ def _get_move_short_desc():
             return "take 1 gem"
         return f"take {len(sel_items)} different gems"
     elif sel_type == 'gemback':
+        if sel_items == [5]:
+            return "return 1 gold token"
         if len(sel_items) == 2 and sel_items[0] == sel_items[1]:
-            return "give back 2 similar gems"
+            return "return 2 matching tokens"
         if len(sel_items) == 1:
-            return "give back 1 gem"
-        return f"give back {len(sel_items)} different gems"
+            return "return 1 token"
+        return f"return {len(sel_items)} different tokens"
         
     return "none"
 
@@ -308,6 +392,8 @@ def _get_last_action_details():
         combo_idx = last_move - 60
         gems = DIFFERENT_GEMS_UP_TO_2[combo_idx] if last_move < 75 else [last_move - 75, last_move - 75]
         return ["gemback", gems]
+    elif last_move == 80 and int(g.board.players_gems[int(history[0][0])].sum()) > 10:
+        return ["gemback", [5]]
     return ["pass", []]
 
 # -------------------------------------------------------------------------
@@ -333,6 +419,8 @@ def handle_action(action_name, *args):
             humans = args[0].to_py() if hasattr(args[0], 'to_py') else args[0]
             return undo(humans)
         return undo()
+    elif action_name == "rewind_to":
+        return rewind_to(args[0])
     elif action_name == "filter_cards":
         global editor_matching_cards
         editor_matching_cards = filterCards(args[0], args[1], args[2])
@@ -354,6 +442,8 @@ def click_and_render(item_category, arg1, arg2=-1):
 def select_card_action(mode, tier, index):
     """Select a card action directly, without relying on click-cycle state."""
     global sel_type, sel_items
+    if max(0, int(g.board.players_gems[player].sum()) - 10) > 0:
+        return get_render_state()
     tier = int(tier)
     index = int(index)
     if mode == "buy":
@@ -402,6 +492,20 @@ def undo(are_players_human=None):
         
     return get_render_state()
 
+def rewind_to(history_offset):
+    """Restore the position before a selected move and discard the newer branch."""
+    global board, player, history, action_event
+    history_offset = int(history_offset)
+    if 0 <= history_offset < len(history):
+        state = history[history_offset]
+        player = int(state[0])
+        board = np.copy(state[1])
+        history = history[history_offset + 1:]
+        g.board.copy_state(board, False)
+        action_event = None
+        reset_selection()
+    return get_render_state()
+
 # -------------------------------------------------------------------------
 # Selection State Machine 
 # -------------------------------------------------------------------------
@@ -418,6 +522,11 @@ def reset_selection():
 def click_item(item_category, arg1, arg2=-1):
     # Processes UI clicks to construct actionable move arrays.
     global sel_type, sel_items
+    overflow = max(0, int(g.board.players_gems[player].sum()) - 10)
+    if overflow > 0 and item_category != 'gemback':
+        return
+    if overflow == 0 and item_category == 'gemback':
+        return
     
     if item_category == 'gem':
         color = arg1
@@ -471,28 +580,29 @@ def click_item(item_category, arg1, arg2=-1):
             sel_items = [tier]
             
     elif item_category == 'gemback':
-        color = arg1
+        color = int(arg1)
         if color == 5:
-            return 
-            
-        if sel_type != 'gemback':
+            if sel_type == 'gemback' and sel_items == [5]:
+                reset_selection()
+            else:
+                sel_type = 'gemback'
+                sel_items = [5]
+            return
+
+        if sel_type != 'gemback' or 5 in sel_items:
             sel_type = 'gemback'
             sel_items = [color]
-        else:
-            if color in sel_items:
-                if len(sel_items) == 1:
-                    sel_items.append(color)
-                elif len(sel_items) == 2 and sel_items[0] == sel_items[1] and sel_items[0] == color:
-                    reset_selection()
-                else:
-                    sel_items.remove(color)
-                    if not sel_items:
-                        sel_type = 'none'
+        elif color in sel_items:
+            if len(sel_items) == 1:
+                sel_items.append(color)
+            elif len(sel_items) == 2 and sel_items[0] == sel_items[1] and sel_items[0] == color:
+                reset_selection()
             else:
-                if len(sel_items) == 2 and sel_items[0] == sel_items[1]:
-                    pass
-                elif len(sel_items) < 2:
-                    sel_items.append(color)
+                sel_items.remove(color)
+                if not sel_items:
+                    sel_type = 'none'
+        elif len(sel_items) < 2 and not (len(sel_items) == 2 and sel_items[0] == sel_items[1]):
+            sel_items.append(color)
 
 # -------------------------------------------------------------------------
 # Serialized Presentation Engine
@@ -546,10 +656,12 @@ def get_render_state():
             c2 = g.board.players_reserved[6*p + 2*i + 1]
             p_data["reserved"].append(_convertCardToJS(c1, c2))
             
-        for i in range(3):
-            if g.board.players_nobles[3*p + i].sum() > 0:
-                p_data["nobles"].append(_convertTokensToJS(g.board.players_nobles[3*p + i])[:3])
-                p_data["noble_points"] = int(g.board.players_nobles[3*p:3*p+3, 6].sum())
+        noble_start = g.board.num_nobles * p
+        noble_rows = g.board.players_nobles[noble_start:noble_start + g.board.num_nobles]
+        for noble in noble_rows:
+            if noble.sum() > 0:
+                p_data["nobles"].append(_convertTokensToJS(noble)[:3])
+        p_data["noble_points"] = int(noble_rows[:, 6].sum())
 
         view["players"].append(p_data)
         
@@ -565,6 +677,19 @@ def get_render_state():
         for tier in range(3)
     ]
     reserved_actions = [bool(valid_moves[27 + index]) for index in range(3)]
+    overflow_count = max(0, int(g.board.players_gems[player].sum()) - 10)
+    take_options = [
+        DIFFERENT_GEMS_UP_TO_3[action - 30] if action < 55 else [action - 55, action - 55]
+        for action in range(30, 60)
+        if valid_moves[action]
+    ]
+    return_options = [
+        DIFFERENT_GEMS_UP_TO_2[action - 60] if action < 75 else [action - 75, action - 75]
+        for action in range(60, 80)
+        if valid_moves[action]
+    ]
+    if overflow_count > 0 and valid_moves[80]:
+        return_options.append([5])
 
     extra = {
         "sel_type": sel_type,
@@ -576,7 +701,11 @@ def get_render_state():
         "matching_cards": editor_matching_cards,
         "card_actions": card_actions,
         "reserved_actions": reserved_actions,
+        "overflow_count": overflow_count,
+        "take_options": take_options,
+        "return_options": return_options,
         "action_event": action_event,
+        "turn_log": _get_turn_log(),
     }
 
     end_status = g.getGameEnded(board, player)
@@ -709,6 +838,6 @@ def changeNoble(index, nobleId, assignedPlayer):
     
     g.board.nobles[index, :] = np_all_nobles[nobleId, :] if assignedPlayer < 0 else 0
     for p in range(g.num_players):
-        g.board.players_nobles[3*p+index, :] = np_all_nobles[nobleId, :] if assignedPlayer == p else 0
+        g.board.players_nobles[g.board.num_nobles * p + index, :] = np_all_nobles[nobleId, :] if assignedPlayer == p else 0
 
     return get_render_state()
