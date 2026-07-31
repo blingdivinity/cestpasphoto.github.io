@@ -237,6 +237,11 @@ function update_store(jsonString) {
     if (isNewAction) {
         cancel_ai_handoff();
         lastScheduledActionEventId = actionEvent.id;
+        if (is_nextplayer_human()) {
+            store.isThinking = false;
+            check_ai_turn();
+            return;
+        }
         store.isReplayingAIAction = true;
         const generation = aiHandoffGeneration;
         aiHandoffTimer = setTimeout(() => {
@@ -245,7 +250,7 @@ function update_store(jsonString) {
             store.isReplayingAIAction = false;
             store.isThinking = false;
             check_ai_turn();
-        }, globalThis.actionAnimationDuration || 0);
+        }, globalThis.actionHandoffDuration || 0);
     } else if (!store.isReplayingAIAction) {
         check_ai_turn();
     }
