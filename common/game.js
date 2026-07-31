@@ -45,7 +45,10 @@ document.addEventListener('alpine:init', () => {
 
         toggleEdit() { handle_edit_toggle() },
         reset() { handle_reset() },
-        changeDifficulty() { pyProxy.changeDifficulty(this.numMCTSSims); },
+        changeDifficulty() {
+            pyProxy.changeDifficulty(this.numMCTSSims);
+            persist_game_state();
+        },
         setGameMode(value) {
             const modes = {
                 'P0':    Array.from({ length: numPlayers }, (_, i) => i === 0),
@@ -57,6 +60,7 @@ document.addEventListener('alpine:init', () => {
             if (modes[value]) {
                 this.arePlayersHuman = modes[value];
                 check_ai_turn();
+                persist_game_state();
             }
         },
     });
@@ -132,6 +136,24 @@ for filename_in, filename_out in files:
         
         const sims = (typeof numMCTSSims !== 'undefined') ? numMCTSSims : 50;
         let initialStateJson = pyProxy.init_game(sims);
+        const persistenceKey = globalThis.gamePersistenceKey;
+        if (persistenceKey && typeof pyProxy.restore_game_state === 'function') {
+            try {
+                const savedGame = localStorage.getItem(persistenceKey);
+                if (savedGame) initialStateJson = pyProxy.restore_game_state(savedGame);
+                const savedUI = JSON.parse(localStorage.getItem(`${persistenceKey}-ui`) || 'null');
+                if (savedUI?.arePlayersHuman?.length === numPlayers) {
+                    Alpine.store('game').arePlayersHuman = savedUI.arePlayersHuman;
+                }
+                if (savedUI?.numMCTSSims) {
+                    Alpine.store('game').numMCTSSims = savedUI.numMCTSSims;
+                    pyProxy.changeDifficulty(savedUI.numMCTSSims);
+                }
+            } catch (error) {
+                console.warn("Saved game could not be restored:", error);
+                localStorage.removeItem(persistenceKey);
+            }
+        }
         
         Alpine.store('game').isLoading = false;
         update_store(initialStateJson);
@@ -147,6 +169,21 @@ for filename_in, filename_out in files:
 /* =================== */
 /* ===== LOGIC   ===== */
 /* =================== */
+
+function persist_game_state() {
+    const persistenceKey = globalThis.gamePersistenceKey;
+    if (!persistenceKey || !pyProxy || typeof pyProxy.export_game_state !== 'function') return;
+    try {
+        localStorage.setItem(persistenceKey, pyProxy.export_game_state());
+        const store = Alpine.store('game');
+        localStorage.setItem(`${persistenceKey}-ui`, JSON.stringify({
+            arePlayersHuman: store.arePlayersHuman,
+            numMCTSSims: store.numMCTSSims,
+        }));
+    } catch (error) {
+        console.warn("Game state could not be saved:", error);
+    }
+}
 
 function update_store(jsonString) {
     if (!jsonString) return;
@@ -164,6 +201,7 @@ function update_store(jsonString) {
     // Le conteneur spécifique au jeu
     store.view = newState.viewData;
     store.extra = newState.extra;
+    persist_game_state();
 
     check_ai_turn();
 }

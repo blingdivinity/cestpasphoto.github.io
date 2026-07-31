@@ -1,3 +1,5 @@
+globalThis.gamePersistenceKey = `splendor-save-v1-${typeof numPlayers === 'undefined' ? 2 : numPlayers}`;
+
 // Defines the Python environment dependencies to be fetched and mounted by Pyodide during initialization.
 const list_of_files = [
   ['splendor/Game.py', 'Game.py'],

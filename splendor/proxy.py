@@ -34,7 +34,49 @@ def init_game(numMCTSSims):
     player = 0
     history = []
     edit_mode = 0
+    reset_selection()
     
+    return get_render_state()
+
+def export_game_state():
+    """Serialize the active match for browser-local persistence."""
+    payload = {
+        "version": 1,
+        "num_players": int(g.num_players),
+        "board": board.tolist(),
+        "player": int(player),
+        "history": [
+            [int(saved_player), saved_board.tolist(), int(action)]
+            for saved_player, saved_board, action in history[:20]
+        ],
+        "edit_mode": int(edit_mode),
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+def restore_game_state(json_state):
+    """Restore a previously serialized match after validating its shape."""
+    global board, player, history, edit_mode
+    payload = json.loads(json_state)
+    if payload.get("version") != 1 or int(payload.get("num_players", -1)) != int(g.num_players):
+        raise ValueError("Saved game is incompatible")
+
+    expected_shape = board.shape
+    restored_board = np.asarray(payload["board"], dtype=board.dtype)
+    if restored_board.shape != expected_shape:
+        raise ValueError("Saved board shape is invalid")
+
+    restored_history = []
+    for saved_player, saved_board, action in payload.get("history", []):
+        restored = np.asarray(saved_board, dtype=board.dtype)
+        if restored.shape == expected_shape:
+            restored_history.append([int(saved_player), restored, int(action)])
+
+    g.board.copy_state(restored_board, True)
+    board = g.board.get_state()
+    player = int(payload["player"])
+    history = restored_history
+    edit_mode = int(payload.get("edit_mode", 0))
+    reset_selection()
     return get_render_state()
 
 def changeDifficulty(numMCTSSims):
@@ -211,6 +253,11 @@ def handle_action(action_name, *args):
         
     if action_name == "click_and_render":
         return click_and_render(args[0], args[1], args[2] if len(args) > 2 else -1)
+    elif action_name == "select_card_action":
+        return select_card_action(args[0], args[1], args[2])
+    elif action_name == "clear_selection":
+        reset_selection()
+        return get_render_state()
     elif action_name == "confirm_action":
         return confirm_action()
     elif action_name == "undo":
@@ -234,6 +281,21 @@ def handle_action(action_name, *args):
 def click_and_render(item_category, arg1, arg2=-1):
     # Triggers selection state updates before broadcasting back the unified state.
     click_item(item_category, arg1, arg2)
+    return get_render_state()
+
+def select_card_action(mode, tier, index):
+    """Select a card action directly, without relying on click-cycle state."""
+    global sel_type, sel_items
+    tier = int(tier)
+    index = int(index)
+    if mode == "buy":
+        sel_type = "card"
+        sel_items = [[tier, index]]
+    elif mode == "reserve" and tier >= 0:
+        sel_type = "rsv"
+        sel_items = [[tier, index]]
+    else:
+        reset_selection()
     return get_render_state()
 
 def confirm_action():
@@ -423,6 +485,19 @@ def get_render_state():
 
         view["players"].append(p_data)
         
+    valid_moves = g.getValidMoves(board, player)
+    card_actions = [
+        [
+            {
+                "buy": bool(valid_moves[tier * 4 + index]),
+                "reserve": bool(valid_moves[12 + tier * 4 + index]),
+            }
+            for index in range(4)
+        ]
+        for tier in range(3)
+    ]
+    reserved_actions = [bool(valid_moves[27 + index]) for index in range(3)]
+
     extra = {
         "sel_type": sel_type,
         "sel_items": sel_items,
@@ -431,6 +506,8 @@ def get_render_state():
         "last_action": _get_last_action_details(),
         "previous_player": int(history[0][0]) if history else -1,
         "matching_cards": editor_matching_cards,
+        "card_actions": card_actions,
+        "reserved_actions": reserved_actions,
     }
 
     end_status = g.getGameEnded(board, player)
