@@ -9,13 +9,17 @@ class dotdict(dict):
     def __getattr__(self, name):
         return self[name]
 
+action_sequence = 0
+action_event = None
+match_nonce = 0
+
 # -------------------------------------------------------------------------
 # Core Engine Initialization & State Management
 # -------------------------------------------------------------------------
 
 def init_game(numMCTSSims):
     # Initializes the main game environment, MCTS agent, and clears history.
-    global g, board, mcts, player, history, edit_mode
+    global g, board, mcts, player, history, edit_mode, action_sequence, action_event, match_nonce
 
     g = Game()
     board = g.getInitBoard()
@@ -34,6 +38,9 @@ def init_game(numMCTSSims):
     player = 0
     history = []
     edit_mode = 0
+    action_sequence = 0
+    action_event = None
+    match_nonce = int(np.random.randint(1, 2**31))
     reset_selection()
     
     return get_render_state()
@@ -55,7 +62,7 @@ def export_game_state():
 
 def restore_game_state(json_state):
     """Restore a previously serialized match after validating its shape."""
-    global board, player, history, edit_mode
+    global board, player, history, edit_mode, action_sequence, action_event, match_nonce
     payload = json.loads(json_state)
     if payload.get("version") != 1 or int(payload.get("num_players", -1)) != int(g.num_players):
         raise ValueError("Saved game is incompatible")
@@ -76,6 +83,9 @@ def restore_game_state(json_state):
     player = int(payload["player"])
     history = restored_history
     edit_mode = int(payload.get("edit_mode", 0))
+    action_sequence = 0
+    action_event = None
+    match_nonce = int(np.random.randint(1, 2**31))
     reset_selection()
     return get_render_state()
 
@@ -87,11 +97,12 @@ def changeDifficulty(numMCTSSims):
 
 def getNextState(action):
     # Applies a move to the board, advances the player turn, and saves history.
-    global g, board, mcts, player, history
-    
+    global g, board, mcts, player, history, action_sequence, action_event
+
+    action_sequence += 1
+    action_event = _describe_action_event(int(action), int(player), action_sequence)
     history.insert(0, [player, np.copy(board), action])
     board, player = g.getNextState(board, player, action)
-    
     return get_render_state()
 
 # -------------------------------------------------------------------------
@@ -125,6 +136,62 @@ def _convertCardToJS(card_data_1, card_data_2):
     tokens = _convertTokensToJS(card_data_1)
     
     return [color, points, tokens]
+
+def _describe_action_event(action, actor, sequence):
+    """Capture semantic move details before the board replaces moved cards."""
+    g.board.copy_state(board, False)
+    event = {
+        "id": f"{match_nonce}:{int(sequence)}",
+        "actor": int(actor),
+        "type": "unknown",
+        "label": "made a move",
+        "gems": [],
+        "card": None,
+        "tier": -1,
+        "index": -1,
+    }
+
+    if action >= 80:
+        event.update({"type": "pass", "label": "passed"})
+        return event
+
+    if action < 12:
+        tier, index = divmod(action, 4)
+        event.update({
+            "type": "buy",
+            "label": "bought a development",
+            "tier": tier,
+            "index": index,
+            "card": _convertCardToJS(g.board.cards_tiers[8*tier + 2*index], g.board.cards_tiers[8*tier + 2*index + 1]),
+        })
+    elif action < 24:
+        tier, index = divmod(action - 12, 4)
+        event.update({
+            "type": "reserve",
+            "label": "reserved a development",
+            "tier": tier,
+            "index": index,
+            "card": _convertCardToJS(g.board.cards_tiers[8*tier + 2*index], g.board.cards_tiers[8*tier + 2*index + 1]),
+        })
+    elif action < 27:
+        event.update({"type": "reserve", "label": "reserved from a deck", "tier": action - 24})
+    elif action < 30:
+        index = action - 27
+        event.update({
+            "type": "buy",
+            "label": "bought a reserved card",
+            "index": index,
+            "card": _convertCardToJS(g.board.players_reserved[6*actor + 2*index], g.board.players_reserved[6*actor + 2*index + 1]),
+        })
+    elif action < 60:
+        gems = DIFFERENT_GEMS_UP_TO_3[action - 30] if action < 55 else [action - 55, action - 55]
+        event.update({"type": "gems", "label": "collected gems", "gems": gems})
+    else:
+        combo_index = action - 60
+        gems = DIFFERENT_GEMS_UP_TO_2[combo_index] if action < 75 else [action - 75, action - 75]
+        event.update({"type": "return", "label": "returned gems", "gems": gems})
+
+    return event
 
 # -------------------------------------------------------------------------
 # Move Translation & Validation
@@ -237,10 +304,11 @@ def _get_last_action_details():
         combo_idx = last_move - 30
         gems = DIFFERENT_GEMS_UP_TO_3[combo_idx] if last_move < 55 else [last_move - 55, last_move - 55]
         return ["gem", gems]
-    else: 
+    elif last_move < 80:
         combo_idx = last_move - 60
         gems = DIFFERENT_GEMS_UP_TO_2[combo_idx] if last_move < 75 else [last_move - 75, last_move - 75]
         return ["gemback", gems]
+    return ["pass", []]
 
 # -------------------------------------------------------------------------
 # Interaction Handlers (Pyodide Entrypoints)
@@ -508,6 +576,7 @@ def get_render_state():
         "matching_cards": editor_matching_cards,
         "card_actions": card_actions,
         "reserved_actions": reserved_actions,
+        "action_event": action_event,
     }
 
     end_status = g.getGameEnded(board, player)

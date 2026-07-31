@@ -87,10 +87,12 @@ function Card({ card, tier, index, extra, compact = false, onClick }) {
   </button>`;
 }
 
-function MarketCard({ card, tier, index, extra, focused, inspect, act }) {
+function MarketCard({ card, tier, index, extra, focused, inspect, act, replay }) {
   const options = extra?.card_actions?.[tier]?.[index] || {};
-  return html`<div className=${`market-card-shell ${focused ? 'show-actions' : ''}`}>
+  const isAISource = replay && ['buy', 'reserve'].includes(replay.type) && replay.tier === tier && replay.index === index;
+  return html`<div className=${`market-card-shell ${focused ? 'show-actions' : ''} ${isAISource ? 'ai-source-pulse' : ''}`}>
     <${Card} card=${card} tier=${tier} index=${index} extra=${extra} onClick=${card?.[0] >= 0 ? inspect : null}/>
+    ${isAISource && replay.card && html`<div className="ai-card-ghost" aria-hidden="true"><${Card} card=${replay.card} tier=${tier} index=${index} extra=${{}}/></div>`}
     ${focused && html`<div className="card-quick-actions" aria-label="Card actions">
       <button className="quick-buy" disabled=${!options.buy} onClick=${event => { event.stopPropagation(); act('buy'); }} title=${options.buy ? 'Purchase this card' : 'Not enough gems to purchase'}><span>◆</span> Buy</button>
       <button className="quick-reserve" disabled=${!options.reserve} onClick=${event => { event.stopPropagation(); act('reserve'); }} title=${options.reserve ? 'Reserve this card' : 'Reserve is unavailable'}><span>◇</span> Hold</button>
@@ -106,17 +108,20 @@ function Noble({ noble, index }) {
   </div>`;
 }
 
-function Deck({ tier, count, active, recent, onClick }) {
-  return html`<button className=${`deck tier-${tier} ${active ? 'is-active' : ''} ${recent ? 'is-recent' : ''}`} onClick=${onClick}>
+function Deck({ tier, count, active, recent, onClick, replay }) {
+  const isAISource = replay?.type === 'reserve' && replay.tier === tier && replay.index === -1;
+  return html`<button className=${`deck tier-${tier} ${active ? 'is-active' : ''} ${recent ? 'is-recent' : ''} ${isAISource ? 'ai-deck-pulse' : ''}`} onClick=${onClick}>
     <span className="deck-pattern"></span><span className="tier-mark">${TIER_NAMES[tier]}</span><span className="deck-count">${count}<small>cards</small></span>
   </button>`;
 }
 
-function PlayerPanel({ player, index, game, inspectReserved }) {
+function PlayerPanel({ player, index, game, inspectReserved, replay }) {
   const human = game.arePlayersHuman?.[index];
   const current = game.currentPlayer === index;
   const reservedCards = safe(player.reserved).map((card, cardIndex) => ({ card, cardIndex })).filter(item => item.card?.[0] >= 0);
-  return html`<article className=${`player-panel ${current ? 'is-current' : ''}`}>
+  const isThinking = current && !human && game.isThinking && !game.isReplayingAIAction;
+  const isActing = replay?.actor === index;
+  return html`<article className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''}`}>
     <header className="player-header">
       <div className="player-avatar"><${Icon} name=${human ? 'user' : 'bot'} size=${20}/><span className="presence"></span></div>
       <div><p>${index === 0 ? 'You' : human ? `Player ${index + 1}` : `AI ${index + 1}`}</p></div>
@@ -141,7 +146,7 @@ function Settings({ game, open, close }) {
 }
 
 
-function GemBank({ open, game, start, choose, confirm, close }) {
+function GemBank({ open, game, start, choose, confirm, close, replay }) {
   const bank = safe(game.view?.bank);
   const isGemSelection = open && game.extra?.sel_type === 'gem';
   const selectedItems = isGemSelection ? safe(game.extra?.sel_items) : [];
@@ -165,7 +170,8 @@ function GemBank({ open, game, start, choose, confirm, close }) {
     <div className="vertical-token-list">${GEM_NAMES.map((name, color) => {
       const occurrences = selectedItems.filter(item => item === color).length;
       const enabled = canChoose(color);
-      return html`<button key=${color} aria-label=${`${name}: ${bank[color]} available${occurrences ? `, ${occurrences} selected` : ''}`} className=${`token-choice gem-${color} ${occurrences ? 'selected' : ''}`} disabled=${!enabled} onClick=${() => open ? choose(color) : start(color)}>
+      const isAIActive = ['gems', 'return'].includes(replay?.type) && replay.gems?.includes(color);
+      return html`<button key=${color} aria-label=${`${name}: ${bank[color]} available${occurrences ? `, ${occurrences} selected` : ''}`} className=${`token-choice gem-${color} ${occurrences ? 'selected' : ''} ${isAIActive ? 'ai-token-pulse' : ''}`} disabled=${!enabled} onClick=${() => open ? choose(color) : start(color)}>
         <span className="token-stack"><i></i><i></i><i></i><b>${bank[color]}</b></span>
         ${occurrences > 0 && html`<em>+${occurrences}</em>`}
       </button>`;
@@ -186,6 +192,22 @@ function ReservedCardDialog({ focus, game, choose, close }) {
   </section>`;
 }
 
+function AIActionReplay({ event }) {
+  if (!event) return null;
+  const actor = `AI ${event.actor + 1}`;
+  return html`<div className=${`ai-action-replay replay-${event.type}`} role="status" aria-live="polite">
+    <div className="replay-actor"><span><${Icon} name="bot" size=${16}/></span><strong>${actor}</strong></div>
+    <div className="replay-motion">
+      ${event.card && html`<div className="replay-card" aria-hidden="true"><${Card} card=${event.card} tier=${event.tier} index=${event.index} extra=${{}} compact/></div>`}
+      ${event.gems?.length > 0 && html`<div className="replay-gems">${event.gems.map((color, index) => html`<i key=${`${color}-${index}`} className=${`gem-${color}`}></i>`)}</div>`}
+      ${event.type === 'reserve' && !event.card && html`<span className="replay-deck">${TIER_NAMES[event.tier] || 'I'}</span>`}
+      ${event.type === 'pass' && html`<span className="replay-pass">—</span>`}
+      <span className="replay-trail"><i></i><i></i><i></i></span>
+    </div>
+    <b>${event.label}</b>
+  </div>`;
+}
+
 function Loading({ game }) {
   return html`<div className="loading-screen"><div className="loader-crown"><${Icon} name="crown" size=${38}/><span></span><span></span><span></span></div><p>${game?.loadingMessage || 'Preparing the table…'}</p><small>The royal court is gathering</small></div>`;
 }
@@ -197,6 +219,7 @@ function App() {
   const [cardFocus, setCardFocus] = useState(null);
   const [gemPicker, setGemPicker] = useState(false);
   const [reservedFocus, setReservedFocus] = useState(null);
+  const [aiReplay, setAIReplay] = useState(null);
   const view = game?.view || {};
   const extra = game?.extra || {};
   const confirmText = useMemo(() => {
@@ -205,6 +228,17 @@ function App() {
     if (extra.sel_type === 'none') return 'Choose a card or collect gems';
     return `${extra.can_confirm ? 'Confirm' : 'Cannot'} ${extra.move_desc || 'move'}`;
   }, [game?.gameEnded, game?.winners, extra.sel_type, extra.can_confirm, extra.move_desc]);
+
+  useEffect(() => {
+    const event = extra.action_event;
+    if (!event || game?.arePlayersHuman?.[event.actor] !== false) {
+      setAIReplay(null);
+      return;
+    }
+    setAIReplay(event);
+    const timer = setTimeout(() => setAIReplay(null), globalThis.actionAnimationDuration || 1900);
+    return () => clearTimeout(timer);
+  }, [extra.action_event?.id]);
 
   const openCardFlow = async (card, tier, index) => {
     if (extra.sel_type !== 'none') await game.act('clear_selection');
@@ -263,23 +297,24 @@ function App() {
       <div className="game-statusbar">
         <span>Target <strong>15</strong></span>
         <span>Turn <strong>${game.currentPlayer + 1}</strong></span>
-        ${game.isThinking && html`<b>Thinking…</b>`}
+        ${game.isThinking && !game.isReplayingAIAction && html`<b>Thinking…</b>`}
       </div>
+      <${AIActionReplay} event=${aiReplay}/>
       <div className="table-layout">
         <aside className="players-column table-players">
           <${ReservedCardDialog} focus=${reservedFocus} game=${game} choose=${chooseReservedCard} close=${closeReserved}/>
-          ${safe(view.players).map((player, idx) => html`<${PlayerPanel} key=${idx} player=${player} index=${idx} game=${game} inspectReserved=${inspectReserved}/>` )}
+          ${safe(view.players).map((player, idx) => html`<${PlayerPanel} key=${idx} player=${player} index=${idx} game=${game} inspectReserved=${inspectReserved} replay=${aiReplay}/>` )}
         </aside>
         <section className="bank-column">
           <span className="column-label">Bank</span>
-          <${GemBank} open=${gemPicker} game=${game} start=${openGemPicker} choose=${color => game.act('click_and_render', 'gem', color)} confirm=${confirmGemSelection} close=${closeGemPicker}/>
+          <${GemBank} open=${gemPicker} game=${game} start=${openGemPicker} choose=${color => game.act('click_and_render', 'gem', color)} confirm=${confirmGemSelection} close=${closeGemPicker} replay=${aiReplay}/>
         </section>
         <section className="board-panel table-board">
           <div className="nobles-row" tabIndex="0" aria-label="Available nobles">${safe(view.nobles).map((noble, idx) => html`<${Noble} key=${idx} noble=${noble} index=${idx}/>` )}</div>
           <div className="market">${[2, 1, 0].map(tier => html`<div className="market-row" key=${tier}>
             <div className="tier-label"><strong>${TIER_NAMES[tier]}</strong></div>
-            <${Deck} tier=${tier} count=${view.decks?.[tier]} active=${selected(extra, 'deck', items => items[0] === tier)} recent=${lastAction(extra, 'deck', value => value === tier)} onClick=${async () => { setCardFocus(null); setGemPicker(false); setReservedFocus(null); await game.act('click_and_render', 'deck', tier); }}/>
-            <div className="cards-row">${safe(view.tiers[tier]).map((card, idx) => html`<${MarketCard} key=${idx} card=${card} tier=${tier} index=${idx} extra=${extra} focused=${cardFocus?.tier === tier && cardFocus?.index === idx} inspect=${() => openCardFlow(card, tier, idx)} act=${runCardAction}/>` )}</div>
+            <${Deck} tier=${tier} count=${view.decks?.[tier]} active=${selected(extra, 'deck', items => items[0] === tier)} recent=${lastAction(extra, 'deck', value => value === tier)} replay=${aiReplay} onClick=${async () => { setCardFocus(null); setGemPicker(false); setReservedFocus(null); await game.act('click_and_render', 'deck', tier); }}/>
+            <div className="cards-row">${safe(view.tiers[tier]).map((card, idx) => html`<${MarketCard} key=${idx} card=${card} tier=${tier} index=${idx} extra=${extra} focused=${cardFocus?.tier === tier && cardFocus?.index === idx} inspect=${() => openCardFlow(card, tier, idx)} act=${runCardAction} replay=${aiReplay}/>` )}</div>
           </div>`)}</div>
           <div className="action-bar"><button className="undo-button" aria-label="Undo last move" disabled=${!game.canUndo || game.isThinking} onClick=${() => game.act('undo', game.arePlayersHuman)}><${Icon} name="undo"/></button>
             <button className=${`confirm-button ${extra.can_confirm || game.gameEnded ? 'ready' : ''}`} disabled=${game.gameEnded ? false : game.isThinking || extra.sel_type === 'none' || !extra.can_confirm} onClick=${gemPicker ? confirmGemSelection : () => game.act('confirm_action')}><span>${confirmText}</span><span className="confirm-arrow">→</span></button>
