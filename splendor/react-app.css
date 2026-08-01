@@ -63,7 +63,20 @@ main{position:relative;z-index:1;max-width:1440px;margin:auto;padding:0 24px 70p
   }
 }
 
-.reserved-row .development-card.compact{cursor:zoom-in}.reserved-row .development-card.compact:hover{transform:translateY(-4px) scale(1.05)}
+.reserved-row{align-items:flex-end;flex-wrap:wrap}
+.reserved-row .reserved-label{align-self:center}
+.reserved-row .development-card.compact{width:62px;height:80px;cursor:zoom-in;border-radius:8px;box-shadow:0 8px 18px rgba(0,0,0,.38)}
+.reserved-row .development-card.compact:hover{transform:translateY(-4px) scale(1.04)}
+.reserved-row .development-card.compact .card-top{height:25px;padding:0 5px}
+.reserved-row .development-card.compact .card-top strong{font-size:.9rem}
+.reserved-row .development-card.compact .bonus{width:15px;height:15px}
+.reserved-row .development-card.compact .card-art{inset:25px 0 0}
+.reserved-row .development-card.compact .costs{left:3px;right:3px;bottom:3px;display:flex;gap:2px;flex-wrap:wrap}
+.reserved-row .development-card.compact .cost{width:14px;height:14px;flex:0 0 14px;border-width:1px;font-size:.46rem}
+@media(max-width:720px){
+  .reserved-row .development-card.compact{width:58px;height:75px}
+  .reserved-row .development-card.compact .cost{width:13px;height:13px;flex-basis:13px}
+}
 
 
 /* Dense, in-context controls */
