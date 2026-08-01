@@ -1,4 +1,4 @@
-const { useEffect, useMemo, useState } = React;
+const { useEffect, useLayoutEffect, useMemo, useState } = React;
 const html = htm.bind(React.createElement);
 
 const GEM_NAMES = ['Diamond', 'Sapphire', 'Emerald', 'Ruby', 'Onyx', 'Gold'];
@@ -85,14 +85,14 @@ function Icon({ name, size = 20 }) {
   return html`<svg className="icon" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 }
 
-function Gem({ index, count, compact = false, active = '', recent = false, arrival = false, onClick }) {
-  return html`<button className=${`gem gem-${index} ${compact ? 'gem-compact' : ''} ${active ? `is-${active}` : ''} ${recent ? 'is-recent' : ''} ${arrival ? 'inventory-arrival' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${count} ${GEM_NAMES[index]} gems${onClick ? ', select to return' : ''}`}>
+function Gem({ index, count, compact = false, active = '', recent = false, arrival = false, anchor, onClick }) {
+  return html`<button data-transit-anchor=${anchor} className=${`gem gem-${index} ${compact ? 'gem-compact' : ''} ${active ? `is-${active}` : ''} ${recent ? 'is-recent' : ''} ${arrival ? 'inventory-arrival' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${count} ${GEM_NAMES[index]} gems${onClick ? ', select to return' : ''}`}>
     <span className="gem-shine"></span><span className="gem-count">${count}</span><span className="gem-name">${GEM_NAMES[index]}</span>
   </button>`;
 }
 
-function Card({ card, tier, index, extra, compact = false, arrival = false, onClick }) {
-  if (!card || card[0] < 0) return html`<div className=${`development-card card-empty ${compact ? 'compact' : ''}`}></div>`;
+function Card({ card, tier, index, extra, compact = false, arrival = false, anchor, onClick }) {
+  if (!card || card[0] < 0) return html`<div data-transit-anchor=${anchor} className=${`development-card card-empty ${compact ? 'compact' : ''}`}></div>`;
   const [color, points, costs] = card;
   const isMarket = tier >= 0;
   const isBuy = selected(extra, 'card', items => items[0]?.[0] === tier && items[0]?.[1] === index);
@@ -100,7 +100,7 @@ function Card({ card, tier, index, extra, compact = false, arrival = false, onCl
   const recent = isMarket
     ? (lastAction(extra, 'card', value => value === tier * 4 + index) || lastAction(extra, 'rsv', value => value === tier * 4 + index))
     : lastAction(extra, 'buyrsv', value => value === index);
-  return html`<button className=${`development-card color-${color} ${compact ? 'compact' : ''} ${isBuy ? 'is-buy' : ''} ${isReserve ? 'is-reserve' : ''} ${recent ? 'is-recent' : ''} ${arrival ? 'inventory-arrival' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${GEM_NAMES[color]} card worth ${points} points`}>
+  return html`<button data-transit-anchor=${anchor} className=${`development-card color-${color} ${compact ? 'compact' : ''} ${isBuy ? 'is-buy' : ''} ${isReserve ? 'is-reserve' : ''} ${recent ? 'is-recent' : ''} ${arrival ? 'inventory-arrival' : ''}`} onClick=${onClick} disabled=${!onClick} aria-label=${`${GEM_NAMES[color]} card worth ${points} points`}>
     <span className="card-glow"></span>
     <span className="card-top"><strong>${points || ''}</strong><span className=${`bonus bonus-${color}`}></span></span>
     <span className="card-art"><span></span></span>
@@ -112,9 +112,8 @@ function Card({ card, tier, index, extra, compact = false, arrival = false, onCl
 function MarketCard({ card, tier, index, extra, focused, inspect, act, replay }) {
   const options = extra?.card_actions?.[tier]?.[index] || {};
   const isAISource = replay && ['buy', 'reserve'].includes(replay.type) && replay.tier === tier && replay.index === index;
-  return html`<div className=${`market-card-shell ${focused ? 'show-actions' : ''} ${isAISource ? 'ai-source-pulse' : ''}`}>
+  return html`<div data-transit-anchor=${`market:${tier}:${index}`} className=${`market-card-shell ${focused ? 'show-actions' : ''} ${isAISource ? 'ai-source-pulse' : ''}`}>
     <${Card} card=${card} tier=${tier} index=${index} extra=${extra} onClick=${card?.[0] >= 0 ? inspect : null}/>
-    ${isAISource && replay.card && html`<div className="ai-card-ghost" aria-hidden="true"><${Card} card=${replay.card} tier=${tier} index=${index} extra=${{}}/></div>`}
     ${focused && html`<div className="card-quick-actions" aria-label="Card actions">
       <button className="quick-buy" disabled=${!options.buy} onClick=${event => { event.stopPropagation(); act('buy'); }} title=${options.buy ? 'Purchase this card' : 'Not enough gems to purchase'}><span>◆</span> Buy</button>
       <button className="quick-reserve" disabled=${!options.reserve} onClick=${event => { event.stopPropagation(); act('reserve'); }} title=${options.reserve ? 'Reserve this card' : 'Reserve is unavailable'}><span>◇</span> Hold</button>
@@ -122,8 +121,8 @@ function MarketCard({ card, tier, index, extra, focused, inspect, act, replay })
   </div>`;
 }
 
-function Noble({ noble, index, arrival = false }) {
-  return html`<div className=${`noble ${arrival ? 'inventory-arrival' : ''}`} style=${{ '--delay': `${index * 70}ms` }}>
+function Noble({ noble, index, arrival = false, anchor }) {
+  return html`<div data-transit-anchor=${anchor} className=${`noble ${arrival ? 'inventory-arrival' : ''}`} style=${{ '--delay': `${index * 70}ms` }}>
     <span className="noble-portrait"><${Icon} name="crown" size=${17}/></span>
     <span className="noble-points">3</span>
     <span className="noble-costs">${safe(noble).map(([idx, amount]) => html`<span key=${idx} className=${`mini-cost cost-${idx}`}>${amount}</span>`)}</span>
@@ -132,7 +131,7 @@ function Noble({ noble, index, arrival = false }) {
 
 function Deck({ tier, count, active, recent, onClick, replay }) {
   const isAISource = replay?.type === 'reserve' && replay.tier === tier && replay.index === -1;
-  return html`<button className=${`deck tier-${tier} ${active ? 'is-active' : ''} ${recent ? 'is-recent' : ''} ${isAISource ? 'ai-deck-pulse' : ''}`} onClick=${onClick} disabled=${!onClick}>
+  return html`<button data-transit-anchor=${`deck:${tier}`} className=${`deck tier-${tier} ${active ? 'is-active' : ''} ${recent ? 'is-recent' : ''} ${isAISource ? 'ai-deck-pulse' : ''}`} onClick=${onClick} disabled=${!onClick}>
     <span className="deck-pattern"></span><span className="tier-mark">${TIER_NAMES[tier]}</span><span className="deck-count">${count}<small>cards</small></span>
   </button>`;
 }
@@ -151,7 +150,7 @@ function PlayerPanel({ player, index, game, inspectReserved, replay }) {
   const arrivingBonus = isActing && replay?.type === 'buy' ? replay.card?.[0] : -1;
   const arrivingReserved = isActing && replay?.type === 'reserve' ? replay.reserved_index : -1;
   const visitorArrived = noble => isActing && safe(replay?.visitors).some(visitor => JSON.stringify(visitor) === JSON.stringify(noble));
-  return html`<article className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''} ${overflow ? 'is-returning' : ''}`}>
+  return html`<article data-transit-anchor=${`player:${index}`} className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''} ${overflow ? 'is-returning' : ''}`}>
     <header className="player-header">
       <div className="player-avatar"><${Icon} name=${human ? 'user' : 'bot'} size=${20}/><span className="presence"></span></div>
       <div><p>${index === 0 ? 'You' : human ? `Player ${index + 1}` : `AI ${index + 1}`}</p></div>
@@ -159,13 +158,10 @@ function PlayerPanel({ player, index, game, inspectReserved, replay }) {
     </header>
     ${overflow && human && html`<div className="overflow-prompt" role="status"><strong>Return ${game.extra.overflow_count} ${game.extra.overflow_count === 1 ? 'token' : 'tokens'}</strong><span>Select an eligible token below to continue your turn.</span></div>`}
     <div className="player-assets">
-      <div className="asset-row gems-owned">${safe(player.gems).map((count, idx) => html`<${Gem} key=${idx} index=${idx} count=${count} compact arrival=${arrivingGems?.includes(idx)} active=${selected(game.extra, 'gemback', items => items.includes(idx)) ? (game.extra.sel_items[0] === game.extra.sel_items[1] ? 'double' : 'active') : ''} recent=${lastAction(game.extra, 'gemback', items => items?.includes(idx)) && index === game.extra?.previous_player} onClick=${canReturn(idx, count) ? () => game.act('click_and_render', 'gemback', idx) : null}/>`)} </div>
-      <div className="asset-row bonuses-owned">${safe(player.cards).slice(0, 5).map((count, idx) => html`<div key=${idx} className=${`bonus-stack bonus-${idx} ${arrivingBonus === idx ? 'inventory-arrival' : ''}`}><span>${count}</span></div>`)}</div>
-      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${Card} key=${`${cardIndex}-${card}`} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra} compact arrival=${cardIndex === arrivingReserved} onClick=${() => inspectReserved(card, index, cardIndex, current && human)}/>` )}</div>`}
-      ${safe(player.nobles).length > 0 && html`<div className="player-nobles" aria-label="Visitors"><span className="reserved-label">Visitors</span>${safe(player.nobles).map((noble, nobleIndex) => html`<${Noble} key=${`${nobleIndex}-${noble}`} noble=${noble} index=${nobleIndex} arrival=${visitorArrived(noble)}/>` )}</div>`}
-      ${isActing && arrivingGems.length > 0 && html`<div className="inventory-flight inventory-gem-flight" aria-hidden="true">${arrivingGems.map((color, gemIndex) => html`<i key=${`${color}-${gemIndex}`} className=${`gem-${color}`}></i>`)}</div>`}
-      ${isActing && replay?.card && ['buy', 'reserve'].includes(replay.type) && html`<div className=${`inventory-flight inventory-card-flight flight-${replay.type}`} aria-hidden="true"><${Card} card=${replay.card} tier=${-1} index=${-1} extra=${{}} compact/></div>`}
-      ${isActing && safe(replay?.visitors).length > 0 && html`<div className="inventory-flight inventory-visitor-flight" aria-hidden="true">${safe(replay.visitors).map((visitor, visitorIndex) => html`<${Noble} key=${visitorIndex} noble=${visitor} index=${visitorIndex}/>` )}</div>`}
+      <div className="asset-row gems-owned">${safe(player.gems).map((count, idx) => html`<${Gem} key=${idx} anchor=${`player:${index}:gem:${idx}`} index=${idx} count=${count} compact arrival=${arrivingGems?.includes(idx)} active=${selected(game.extra, 'gemback', items => items.includes(idx)) ? (game.extra.sel_items[0] === game.extra.sel_items[1] ? 'double' : 'active') : ''} recent=${lastAction(game.extra, 'gemback', items => items?.includes(idx)) && index === game.extra?.previous_player} onClick=${canReturn(idx, count) ? () => game.act('click_and_render', 'gemback', idx) : null}/>`)} </div>
+      <div className="asset-row bonuses-owned">${safe(player.cards).slice(0, 5).map((count, idx) => html`<div key=${idx} data-transit-anchor=${`player:${index}:bonus:${idx}`} className=${`bonus-stack bonus-${idx} ${arrivingBonus === idx ? 'inventory-arrival' : ''}`}><span>${count}</span></div>`)}</div>
+      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${Card} key=${`${cardIndex}-${card}`} anchor=${`player:${index}:reserved:${cardIndex}`} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra} compact arrival=${cardIndex === arrivingReserved} onClick=${() => inspectReserved(card, index, cardIndex, current && human)}/>` )}</div>`}
+      ${safe(player.nobles).length > 0 && html`<div className="player-nobles" aria-label="Visitors"><span className="reserved-label">Visitors</span>${safe(player.nobles).map((noble, nobleIndex) => html`<${Noble} key=${`${nobleIndex}-${noble}`} anchor=${`player:${index}:visitor:${JSON.stringify(noble)}`} noble=${noble} index=${nobleIndex} arrival=${visitorArrived(noble)}/>` )}</div>`}
     </div>
   </article>`;
 }
@@ -201,7 +197,7 @@ function GemBank({ open, game, start, choose, confirm, close, replay }) {
       const enabled = canChoose(color);
       const isAIActive = ['gems', 'return'].includes(replay?.type) && replay.gems?.includes(color);
       return html`<button key=${color} aria-label=${`${name}: ${bank[color]} available${occurrences ? `, ${occurrences} selected` : ''}`} className=${`token-choice gem-${color} ${occurrences ? 'selected' : ''} ${isAIActive ? 'ai-token-pulse' : ''}`} disabled=${!enabled} onClick=${() => open ? choose(color) : start(color)}>
-        <span className="token-stack"><i></i><i></i><i></i><b>${bank[color]}</b></span>
+        <span data-transit-anchor=${`bank:gem:${color}`} className="token-stack"><i></i><i></i><i></i><b>${bank[color]}</b></span>
         ${occurrences > 0 && html`<em>+${occurrences}</em>`}
       </button>`;
     })}</div>
@@ -219,6 +215,98 @@ function ReservedCardDialog({ focus, game, choose, close }) {
       ${canBuy && html`<button className="reserved-buy" disabled=${!buyAvailable} onClick=${choose}>${buyAvailable ? 'Buy' : 'Can’t buy'}</button>`}
     </div>
   </section>`;
+}
+
+const transitRectCache = new Map();
+
+function snapshotTransitAnchors() {
+  document.querySelectorAll('[data-transit-anchor]').forEach(element => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width && rect.height) transitRectCache.set(element.dataset.transitAnchor, {
+      left: rect.left, top: rect.top, width: rect.width, height: rect.height
+    });
+  });
+}
+
+function transitRect(anchor, cachedOnly = false) {
+  if (!cachedOnly) {
+    const element = [...document.querySelectorAll('[data-transit-anchor]')].find(node => node.dataset.transitAnchor === anchor);
+    const rect = element?.getBoundingClientRect();
+    if (rect?.width && rect?.height) return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  }
+  return transitRectCache.get(anchor);
+}
+
+function ViewportTransit({ event }) {
+  const [flights, setFlights] = useState([]);
+
+  useLayoutEffect(() => {
+    if (!event) {
+      setFlights([]);
+      return;
+    }
+    const actor = event.actor;
+    const next = [];
+    const add = (kind, sourceAnchor, destinationAnchor, data, delay = 0, cachedSource = false) => {
+      const source = transitRect(sourceAnchor, cachedSource);
+      const destination = transitRect(destinationAnchor);
+      if (!source || !destination) return;
+      const width = kind === 'gem' ? 34 : kind === 'card' ? Math.min(92, Math.max(54, source.width)) : Math.min(76, Math.max(54, source.width));
+      const height = kind === 'gem' ? 34 : kind === 'card' ? width * 1.25 : Math.min(55, Math.max(40, source.height));
+      const startX = source.left + source.width / 2 - width / 2;
+      const startY = source.top + source.height / 2 - height / 2;
+      const endX = destination.left + destination.width / 2 - width / 2;
+      const endY = destination.top + destination.height / 2 - height / 2;
+      next.push({
+        kind, data, delay,
+        style: {
+          left: `${startX}px`,
+          top: `${startY}px`,
+          width: `${width}px`,
+          height: `${height}px`,
+          '--travel-x': `${endX - startX}px`,
+          '--travel-y': `${endY - startY}px`,
+          '--settle-scale-x': Math.max(.35, Math.min(1.35, destination.width / width)),
+          '--settle-scale-y': Math.max(.35, Math.min(1.35, destination.height / height)),
+          '--transit-delay': `${delay}ms`
+        }
+      });
+    };
+
+    if (event.type === 'return') {
+      safe(event.gems).forEach((color, index) => add('gem', `player:${actor}:gem:${color}`, `bank:gem:${color}`, color, index * 95));
+    } else {
+      const received = safe(event.arriving_gems).length ? safe(event.arriving_gems) : event.type === 'gems' ? safe(event.gems) : [];
+      received.forEach((color, index) => add('gem', `bank:gem:${color}`, `player:${actor}:gem:${color}`, color, index * 95));
+    }
+
+    if (event.card && ['buy', 'reserve'].includes(event.type)) {
+      const reservedSource = event.tier < 0;
+      const sourceIndex = event.type === 'buy' ? event.index : event.reserved_index;
+      const sourceAnchor = reservedSource
+        ? `player:${actor}:reserved:${sourceIndex}`
+        : event.index === -1 ? `deck:${event.tier}` : `market:${event.tier}:${event.index}`;
+      const destinationAnchor = event.type === 'buy'
+        ? `player:${actor}:bonus:${event.card[0]}`
+        : `player:${actor}:reserved:${event.reserved_index}`;
+      add('card', sourceAnchor, destinationAnchor, event.card, 80, reservedSource);
+    }
+
+    safe(event.visitors).forEach((visitor, index) => {
+      const nobleKey = JSON.stringify(visitor);
+      add('noble', `noble:${nobleKey}`, `player:${actor}:visitor:${nobleKey}`, visitor, 180 + index * 110, true);
+    });
+    setFlights(next);
+  }, [event?.id]);
+
+  if (!event || !flights.length) return null;
+  return ReactDOM.createPortal(html`<div className="viewport-transit-layer" aria-hidden="true">
+    ${flights.map((flight, index) => html`<div key=${`${event.id}-${flight.kind}-${index}`} className=${`viewport-transit viewport-transit-${flight.kind}`} style=${flight.style}>
+      ${flight.kind === 'gem' && html`<i className=${`gem-${flight.data}`}></i>`}
+      ${flight.kind === 'card' && html`<${Card} card=${flight.data} tier=${-1} index=${-1} extra=${{}}/>`}
+      ${flight.kind === 'noble' && html`<${Noble} noble=${flight.data} index=${0}/>`}
+    </div>`)}
+  </div>`, document.body);
 }
 
 function ActionReplay({ event, game }) {
@@ -368,6 +456,10 @@ function App() {
     return `${extra.can_confirm ? 'Confirm' : 'Cannot'} ${extra.move_desc || 'move'}`;
   }, [game?.gameEnded, game?.winners, overflow, extra.sel_type, extra.sel_items, extra.can_confirm, extra.move_desc]);
 
+  useLayoutEffect(() => {
+    snapshotTransitAnchors();
+  });
+
   useEffect(() => {
     const event = extra.action_event;
     if (!event) {
@@ -375,7 +467,7 @@ function App() {
       return;
     }
     setActionReplay(event);
-    const timer = setTimeout(() => setActionReplay(null), globalThis.actionAnimationDuration || 1900);
+    const timer = setTimeout(() => setActionReplay(null), Math.max(globalThis.actionAnimationDuration || 0, 2600));
     return () => clearTimeout(timer);
   }, [extra.action_event?.id]);
 
@@ -450,7 +542,6 @@ function App() {
           <${Icon} name="history" size=${16}/> History${safe(extra.turn_log).length > 0 && html`<span>${safe(extra.turn_log).length}</span>`}
         </button>
       </div>
-      <${ActionReplay} event=${actionReplay} game=${game}/>
       <div className="table-layout">
         <aside className="players-column table-players">
           <${ReservedCardDialog} focus=${reservedFocus} game=${game} choose=${chooseReservedCard} close=${closeReserved}/>
@@ -461,7 +552,7 @@ function App() {
           <${GemBank} open=${gemPicker} game=${game} start=${openGemPicker} choose=${color => game.act('click_and_render', 'gem', color)} confirm=${confirmGemSelection} close=${closeGemPicker} replay=${actionReplay}/>
         </section>
         <section className="board-panel table-board">
-          <div className="nobles-row" tabIndex="0" aria-label="Available nobles">${safe(view.nobles).map((noble, idx) => html`<${Noble} key=${idx} noble=${noble} index=${idx}/>` )}</div>
+          <div className="nobles-row" tabIndex="0" aria-label="Available nobles">${safe(view.nobles).map((noble, idx) => html`<${Noble} key=${idx} anchor=${`noble:${JSON.stringify(noble)}`} noble=${noble} index=${idx}/>` )}</div>
           <div className="market">${[2, 1, 0].map(tier => html`<div className="market-row" key=${tier}>
             <div className="tier-label"><strong>${TIER_NAMES[tier]}</strong></div>
             <${Deck} tier=${tier} count=${view.decks?.[tier]} active=${selected(extra, 'deck', items => items[0] === tier)} recent=${lastAction(extra, 'deck', value => value === tier)} replay=${actionReplay} onClick=${extra.overflow_count > 0 ? null : async () => { setCardFocus(null); setGemPicker(false); setReservedFocus(null); await game.act('click_and_render', 'deck', tier); }}/>
@@ -472,6 +563,8 @@ function App() {
           </div>
         </section>
       </div>
+      <${ViewportTransit} event=${actionReplay}/>
+      <${ActionReplay} event=${actionReplay} game=${game}/>
     </main>
     <${Settings} game=${game} open=${settings} close=${() => setSettings(false)}/>
     <${TurnHistory} game=${game} open=${history} close=${closeHistory}/>

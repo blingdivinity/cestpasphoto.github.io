@@ -1,6 +1,6 @@
 globalThis.gamePersistenceKey = `splendor-save-v1-${typeof numPlayers === 'undefined' ? 2 : numPlayers}`;
 globalThis.actionAnimationDuration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 1800 : 2800;
-globalThis.actionHandoffDuration = globalThis.actionAnimationDuration;
+globalThis.actionHandoffDuration = Math.max(globalThis.actionAnimationDuration, 2600);
 
 // Defines the Python environment dependencies to be fetched and mounted by Pyodide during initialization.
 const list_of_files = [
