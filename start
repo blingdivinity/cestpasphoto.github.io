@@ -1,0 +1,79 @@
+#!/bin/sh
+
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HOST=${HOST:-127.0.0.1}
+PORT=${PORT:-8000}
+PLAYERS=${PLAYERS:-2}
+URL=${URL:-"http://${HOST}:${PORT}/splendor.html?players=${PLAYERS}"}
+
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  echo "start: Python is required to run the local server." >&2
+  exit 1
+fi
+
+open_browser() {
+  if [ "${NO_OPEN:-0}" = "1" ]; then
+    return
+  fi
+
+  if [ -n "${BROWSER:-}" ]; then
+    "$BROWSER" "$URL" >/dev/null 2>&1 &
+    return
+  fi
+
+  case $(uname -s) in
+    Darwin) open "$URL" >/dev/null 2>&1 & ;;
+    Linux)
+      if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$URL" >/dev/null 2>&1 &
+      else
+        echo "start: Open $URL in your browser." >&2
+      fi
+      ;;
+    MINGW*|MSYS*|CYGWIN*) cmd.exe /c start "" "$URL" >/dev/null 2>&1 & ;;
+    *) echo "start: Open $URL in your browser." >&2 ;;
+  esac
+}
+
+cleanup() {
+  trap - EXIT HUP INT TERM
+  if kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+
+"$PYTHON" -m http.server "$PORT" --bind "$HOST" --directory "$ROOT" &
+SERVER_PID=$!
+trap cleanup EXIT HUP INT TERM
+sleep 0.1
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  wait "$SERVER_PID"
+  exit $?
+fi
+
+
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    wait "$SERVER_PID"
+    exit $?
+  fi
+  if "$PYTHON" -c "import urllib.request; urllib.request.urlopen('$URL', timeout=0.2).close()" >/dev/null 2>&1; then
+    echo "Splendor is running at $URL"
+    open_browser
+    wait "$SERVER_PID"
+    exit $?
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.1
+done
+
+echo "start: Server did not become ready at $URL." >&2
+exit 1
