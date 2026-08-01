@@ -182,11 +182,13 @@ function PlayerPanel({ player, index, game, inspectReserved, reservedFocus, choo
   </article>`;
 }
 
-function Settings({ game, open, close }) {
+function Settings({ game, open, close, changeAIPlayers }) {
   if (!open) return null;
   return html`<div className="modal-backdrop" onClick=${close}><section className="settings-modal" onClick=${e => e.stopPropagation()}>
     <button className="modal-close" onClick=${close}>×</button><span className="eyebrow">Game setup</span><h2>Shape your match</h2>
     <label>Opponent<select value=${game.arePlayersHuman?.every(Boolean) ? 'Human' : game.arePlayersHuman?.[0] ? 'P0' : 'AI'} onChange=${e => game.setGameMode(e.target.value)}><option value="P0">Play against AI</option><option value="Human">Pass & play</option><option value="AI">Watch AI match</option></select></label>
+    <label>AI players<select value=${Math.max(1, numPlayers - 1)} aria-describedby="ai-player-count-help" onChange=${e => changeAIPlayers(Number(e.target.value))}><option value="1">1 AI player</option><option value="2">2 AI players</option><option value="3">3 AI players</option></select></label>
+    <small id="ai-player-count-help" className="settings-help">You occupy the first seat. Changing this starts a fresh match with the selected number of AI opponents.</small>
     <label>AI calculation<select value=${game.numMCTSSims} onChange=${e => { game.numMCTSSims = Number(e.target.value); game.changeDifficulty(); }}><option value="3">Quick</option><option value="12">Balanced</option><option value="25">Strategic</option><option value="100">Master</option><option value="400">Grandmaster</option></select></label>
     <button className="primary-button" onClick=${() => { game.reset(); close(); }}><${Icon} name="reset"/> Start a fresh match</button>
   </section></div>`;
@@ -521,6 +523,20 @@ function App() {
     setReservedFocus(null);
   };
   const closeReserved = () => setReservedFocus(null);
+  const changeAIPlayers = aiPlayers => {
+    const opponentCount = Math.max(1, Math.min(3, Number(aiPlayers) || 1));
+    const playerCount = opponentCount + 1;
+    const persistenceKey = `splendor-save-v1-${playerCount}`;
+    localStorage.removeItem(persistenceKey);
+    localStorage.setItem(`${persistenceKey}-ui`, JSON.stringify({
+      arePlayersHuman: Array.from({ length: playerCount }, (_, index) => index === 0),
+      numMCTSSims: game.numMCTSSims,
+      isTimelinePaused: false
+    }));
+    const url = new URL(window.location.href);
+    url.searchParams.set('players', String(playerCount));
+    window.location.assign(url.toString());
+  };
   const closeHistory = () => {
     setHistory(false);
     requestAnimationFrame(() => document.querySelector('.history-trigger')?.focus());
@@ -568,7 +584,7 @@ function App() {
       <${ViewportTransit} event=${actionReplay}/>
       <${ActionReplay} event=${actionReplay} game=${game}/>
     </main>
-    <${Settings} game=${game} open=${settings} close=${() => setSettings(false)}/>
+    <${Settings} game=${game} open=${settings} close=${() => setSettings(false)} changeAIPlayers=${changeAIPlayers}/>
     <${TurnHistory} game=${game} open=${history} close=${closeHistory}/>
   </div>`;
 }
