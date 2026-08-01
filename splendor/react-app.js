@@ -136,7 +136,23 @@ function Deck({ tier, count, active, recent, onClick, replay }) {
   </button>`;
 }
 
-function PlayerPanel({ player, index, game, inspectReserved, replay }) {
+function ReservedInventoryCard({ card, cardIndex, playerIndex, game, focused, inspect, choose, close, arrival }) {
+  const currentHuman = game.currentPlayer === playerIndex && game.arePlayersHuman?.[playerIndex];
+  const blocked = (game.extra?.overflow_count || 0) > 0;
+  const selectable = currentHuman && !blocked;
+  const buyAvailable = selectable && Boolean(game.extra?.reserved_actions?.[cardIndex]);
+  return html`<div className=${`reserved-card-shell ${focused ? 'show-buy' : ''}`}>
+    <${Card} anchor=${`player:${playerIndex}:reserved:${cardIndex}`} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra} compact arrival=${arrival} onClick=${selectable ? () => inspect(card, playerIndex, cardIndex, true) : null}/>
+    ${focused && html`<div className="reserved-card-actions" aria-label="Reserved card action">
+      <button className="reserved-inline-buy" disabled=${!buyAvailable} onClick=${event => { event.stopPropagation(); choose(); }} title=${buyAvailable ? 'Purchase this reserved card' : 'Not enough gems to purchase'}>
+        <span>◆</span>Buy
+      </button>
+      <button className="reserved-inline-close" onClick=${event => { event.stopPropagation(); close(); }} aria-label="Cancel reserved card selection">×</button>
+    </div>`}
+  </div>`;
+}
+
+function PlayerPanel({ player, index, game, inspectReserved, reservedFocus, chooseReservedCard, closeReserved, replay }) {
   const human = game.arePlayersHuman?.[index];
   const current = game.currentPlayer === index;
   const reservedCards = safe(player.reserved).map((card, cardIndex) => ({ card, cardIndex })).filter(item => item.card?.[0] >= 0);
@@ -160,7 +176,7 @@ function PlayerPanel({ player, index, game, inspectReserved, replay }) {
     <div className="player-assets">
       <div className="asset-row gems-owned">${safe(player.gems).map((count, idx) => html`<${Gem} key=${idx} anchor=${`player:${index}:gem:${idx}`} index=${idx} count=${count} compact arrival=${arrivingGems?.includes(idx)} active=${selected(game.extra, 'gemback', items => items.includes(idx)) ? (game.extra.sel_items[0] === game.extra.sel_items[1] ? 'double' : 'active') : ''} recent=${lastAction(game.extra, 'gemback', items => items?.includes(idx)) && index === game.extra?.previous_player} onClick=${canReturn(idx, count) ? () => game.act('click_and_render', 'gemback', idx) : null}/>`)} </div>
       <div className="asset-row bonuses-owned">${safe(player.cards).slice(0, 5).map((count, idx) => html`<div key=${idx} data-transit-anchor=${`player:${index}:bonus:${idx}`} className=${`bonus-stack bonus-${idx} ${arrivingBonus === idx ? 'inventory-arrival' : ''}`}><span>${count}</span></div>`)}</div>
-      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${Card} key=${`${cardIndex}-${card}`} anchor=${`player:${index}:reserved:${cardIndex}`} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra} compact arrival=${cardIndex === arrivingReserved} onClick=${() => inspectReserved(card, index, cardIndex, current && human)}/>` )}</div>`}
+      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${ReservedInventoryCard} key=${`${cardIndex}-${card}`} card=${card} cardIndex=${cardIndex} playerIndex=${index} game=${game} focused=${reservedFocus?.playerIndex === index && reservedFocus?.cardIndex === cardIndex} inspect=${inspectReserved} choose=${chooseReservedCard} close=${closeReserved} arrival=${cardIndex === arrivingReserved}/>` )}</div>`}
       ${safe(player.nobles).length > 0 && html`<div className="player-nobles" aria-label="Visitors"><span className="reserved-label">Visitors</span>${safe(player.nobles).map((noble, nobleIndex) => html`<${Noble} key=${`${nobleIndex}-${noble}`} anchor=${`player:${index}:visitor:${JSON.stringify(noble)}`} noble=${noble} index=${nobleIndex} arrival=${visitorArrived(noble)}/>` )}</div>`}
     </div>
   </article>`;
@@ -204,19 +220,6 @@ function GemBank({ open, game, start, choose, confirm, close, replay }) {
     ${open && html`<div className="vertical-picker-actions"><button onClick=${close}>Cancel</button><button disabled=${!ready || game.isThinking} onClick=${confirm}>Take gems <span>→</span></button></div>`}
   </section>`;
 }
-function ReservedCardDialog({ focus, game, choose, close }) {
-  if (!focus) return null;
-  const { card, playerIndex, cardIndex, canBuy } = focus;
-  const buyAvailable = Boolean(canBuy && game.extra?.reserved_actions?.[cardIndex]);
-  return html`<section className="reserved-inspector" aria-label=${`Player ${playerIndex + 1} reserved card`}>
-    <div className="reserved-inspector-head"><span><small>Player ${playerIndex + 1}</small>Reserved card</span><button onClick=${close} aria-label="Close reserved card">×</button></div>
-    <div className="reserved-inspector-body">
-      <${Card} card=${card} tier=${-1} index=${cardIndex} extra=${game.extra}/>
-      ${canBuy && html`<button className="reserved-buy" disabled=${!buyAvailable} onClick=${choose}>${buyAvailable ? 'Buy' : 'Can’t buy'}</button>`}
-    </div>
-  </section>`;
-}
-
 const transitRectCache = new Map();
 
 function snapshotTransitAnchors() {
@@ -509,7 +512,7 @@ function App() {
     if (extra.sel_type !== 'none') await game.act('clear_selection');
     setCardFocus(null);
     setGemPicker(false);
-    setReservedFocus({ card, playerIndex, cardIndex, canBuy });
+    setReservedFocus(current => current?.playerIndex === playerIndex && current?.cardIndex === cardIndex ? null : { card, playerIndex, cardIndex, canBuy });
   };
   const chooseReservedCard = async () => {
     if (!reservedFocus || !extra.reserved_actions?.[reservedFocus.cardIndex]) return;
@@ -544,8 +547,7 @@ function App() {
       </div>
       <div className="table-layout">
         <aside className="players-column table-players">
-          <${ReservedCardDialog} focus=${reservedFocus} game=${game} choose=${chooseReservedCard} close=${closeReserved}/>
-          ${safe(view.players).map((player, idx) => html`<${PlayerPanel} key=${idx} player=${player} index=${idx} game=${game} inspectReserved=${inspectReserved} replay=${actionReplay}/>` )}
+          ${safe(view.players).map((player, idx) => html`<${PlayerPanel} key=${idx} player=${player} index=${idx} game=${game} inspectReserved=${inspectReserved} reservedFocus=${reservedFocus} chooseReservedCard=${chooseReservedCard} closeReserved=${closeReserved} replay=${actionReplay}/>` )}
         </aside>
         <section className="bank-column">
           <span className="column-label">Bank</span>

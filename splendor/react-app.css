@@ -65,8 +65,18 @@ main{position:relative;z-index:1;max-width:1440px;margin:auto;padding:0 24px 70p
 
 .reserved-row{align-items:flex-end;flex-wrap:wrap}
 .reserved-row .reserved-label{align-self:center}
-.reserved-row .development-card.compact{width:62px;height:80px;cursor:zoom-in;border-radius:8px;box-shadow:0 8px 18px rgba(0,0,0,.38)}
-.reserved-row .development-card.compact:hover{transform:translateY(-4px) scale(1.04)}
+.reserved-card-shell{position:relative;width:62px;height:80px;flex:none}
+.reserved-card-shell.show-buy>.development-card{filter:brightness(.52) saturate(.72)}
+.reserved-card-actions{position:absolute;z-index:4;left:3px;right:3px;top:50%;display:grid;grid-template-columns:1fr 19px;gap:3px;transform:translateY(-50%);animation:quickActionsIn .18s var(--ease)}
+.reserved-card-actions button{min-width:0;height:25px;padding:0;border:1px solid rgba(255,255,255,.3);border-radius:5px;font-size:.49rem;font-weight:800;cursor:pointer;box-shadow:0 4px 10px #0009}
+.reserved-inline-buy{background:#79dda9;color:#13251c}
+.reserved-inline-buy span{margin-right:2px}
+.reserved-inline-buy:disabled{background:#555b57;color:#c1c4c0;cursor:not-allowed}
+.reserved-inline-close{background:#232927;color:#d8dbd7;font-size:.78rem!important}
+.reserved-card-actions button:hover:not(:disabled){filter:brightness(1.1)}
+.reserved-row .development-card.compact{width:62px;height:80px;cursor:default;border-radius:8px;box-shadow:0 8px 18px rgba(0,0,0,.38)}
+.reserved-row .development-card.compact:not(:disabled){cursor:pointer}
+.reserved-row .development-card.compact:not(:disabled):hover{transform:translateY(-4px) scale(1.04)}
 .reserved-row .development-card.compact .card-top{height:25px;padding:0 5px}
 .reserved-row .development-card.compact .card-top strong{font-size:.9rem}
 .reserved-row .development-card.compact .bonus{width:15px;height:15px}
@@ -75,6 +85,7 @@ main{position:relative;z-index:1;max-width:1440px;margin:auto;padding:0 24px 70p
 .reserved-row .development-card.compact .cost{width:14px;height:14px;flex:0 0 14px;border-width:1px;font-size:.46rem}
 @media(max-width:720px){
   .reserved-row .development-card.compact{width:58px;height:75px}
+  .reserved-card-shell{width:58px;height:75px}
   .reserved-row .development-card.compact .cost{width:13px;height:13px;flex-basis:13px}
 }
 
@@ -112,10 +123,6 @@ main{position:relative;z-index:1;max-width:1440px;margin:auto;padding:0 24px 70p
 .card-quick-actions .quick-reserve{background:#e2bb68}
 .card-quick-actions button:hover:not(:disabled){filter:brightness(1.1);transform:translateY(-1px)}
 .card-quick-actions button:disabled{background:#5e625e;color:#a4a7a3;border-color:#ffffff12;box-shadow:none;cursor:not-allowed;opacity:.82}
-.reserved-inspector{margin:0 0 12px;padding:10px;border:1px solid rgba(212,168,79,.2);border-radius:11px;background:#ffffff04;animation:fadeUp .25s var(--ease)}
-.reserved-inspector-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:.68rem;font-weight:600}.reserved-inspector-head small{display:block;color:var(--gold);font-size:.48rem;text-transform:uppercase;letter-spacing:.1em}.reserved-inspector-head button{border:0;background:transparent;color:#888d86;font-size:1.2rem;cursor:pointer}
-.reserved-inspector-body{display:grid;grid-template-columns:70px 1fr;gap:9px;align-items:end}.reserved-inspector-body>.development-card{width:70px;height:90px}.reserved-inspector-body>.development-card .card-top{height:25px}.reserved-inspector-body>.development-card .card-top strong{font-size:1rem}.reserved-inspector-body>.development-card .bonus{width:15px;height:15px}.reserved-inspector-body>.development-card .card-art{inset:25px 0 0}.reserved-inspector-body>.development-card .costs{transform:scale(.72);transform-origin:left bottom}
-.reserved-buy{height:34px;border:0;border-radius:7px;background:#79dda9;color:#13251c;font-size:.62rem;font-weight:800;cursor:pointer}.reserved-buy:disabled{background:#ffffff08;color:#656a64;cursor:not-allowed}
 @keyframes quickActionsIn{from{opacity:0;transform:translateY(-42%) scale(.94)}to{opacity:1;transform:translateY(-50%) scale(1)}}
 
 @media(max-width:720px){
@@ -195,12 +202,11 @@ main{position:relative;z-index:1;max-width:1440px;margin:auto;padding:0 24px 70p
   .table-layout{grid-template-columns:220px 120px minmax(520px,1fr);gap:10px}.table-main{padding-inline:12px}.bank-column{padding:7px}.token-choice{grid-template-columns:52px 1fr;padding-inline:6px}
 }
 @media(max-width:900px){
-  .table-layout{grid-template-columns:1fr}.table-board{order:1}.bank-column{order:2}.table-players{order:3}.table-layout .players-column{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.table-layout .reserved-inspector{grid-column:1/-1}.table-board .market-row{grid-template-columns:24px 58px 1fr}.table-board .deck,.table-board .development-card{height:96px}.bank-column .vertical-gem-bank{max-width:420px}
+  .table-layout{grid-template-columns:1fr}.table-board{order:1}.bank-column{order:2}.table-players{order:3}.table-layout .players-column{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.table-board .market-row{grid-template-columns:24px 58px 1fr}.table-board .deck,.table-board .development-card{height:96px}.bank-column .vertical-gem-bank{max-width:420px}
 }
 @media(max-width:560px){
   .table-main{padding:10px 8px 35px}.game-statusbar{height:43px;gap:15px;padding-bottom:9px}.game-statusbar>b{font-size:.56rem}.table-board{padding:10px 7px}.table-board .nobles-row{overflow-x:auto}.table-board .market-row{grid-template-columns:18px 48px 1fr;gap:5px}.table-board .deck,.table-board .development-card{height:88px}.table-board .cards-row{gap:4px}.table-layout .players-column{grid-template-columns:1fr}.token-choice{min-height:49px}
 }
-.reserved-inspector-body{grid-template-columns:105px 1fr}.reserved-inspector-body>.development-card{width:100px;height:125px}.reserved-inspector-body>.development-card .costs{display:grid;grid-template-columns:repeat(2,22px);gap:2px;transform:none;max-width:50px}.reserved-inspector-body>.development-card .cost{width:22px;height:22px;flex-basis:22px;font-size:.7rem}
 .topbar{grid-template-columns:1fr auto}
 .token-choice{grid-template-columns:62px 1fr}.token-choice>em{justify-self:end}
 .token-choice.gem-0,.token-choice.gem-5{color:var(--ink)}
