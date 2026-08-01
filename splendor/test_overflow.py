@@ -329,6 +329,20 @@ class OverflowProxyTests(unittest.TestCase):
         self.assertEqual(80, self.proxy._get_move_index())
         self.assertTrue(self.proxy._is_selection_valid())
 
+    def test_single_forced_return_can_be_deselected(self):
+        game_board = self.proxy.g.board
+        game_board.players_gems[0] = np.array([3, 2, 2, 2, 2, 0, 0], dtype=np.int8)
+        game_board.bank[0, :5] = game_board.num_gems_in_play - game_board.players_gems[0, :5]
+        self.proxy.board = game_board.get_state()
+
+        self.proxy.click_item("gemback", 0)
+        self.assertEqual("gemback", self.proxy.sel_type)
+        self.assertEqual([0], self.proxy.sel_items)
+
+        self.proxy.click_item("gemback", 0)
+        self.assertEqual("none", self.proxy.sel_type)
+        self.assertEqual([], self.proxy.sel_items)
+
     def test_action_80_history_uses_persisted_pre_action_state(self):
         game_board = self.proxy.g.board
         game_board.players_gems[0] = np.array([2, 2, 2, 2, 2, 1, 0], dtype=np.int8)

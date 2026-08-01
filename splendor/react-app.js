@@ -163,7 +163,7 @@ function PlayerPanel({ player, index, game, inspectReserved, reservedFocus, choo
   const returnOptions = safe(game.extra?.return_options);
   const voluntaryReturns = current && human && !overflow && Boolean(game.extra?.legacy_token_profile?.[index]) && returnOptions.length > 0;
   const returning = overflow || voluntaryReturns;
-  const canReturn = (color, count) => returning && human && count > 0 && canExtendTokenSelection(returnSelection, color, returnOptions, true);
+  const canReturn = (color, count) => returning && human && count > 0 && (returnSelection.includes(color) || canExtendTokenSelection(returnSelection, color, returnOptions, true));
   const arrivingGems = isActing ? safe(replay?.arriving_gems) : [];
   const arrivingBonus = isActing && replay?.type === 'buy' ? replay.card?.[0] : -1;
   const arrivingReserved = isActing && replay?.type === 'reserve' ? replay.reserved_index : -1;

@@ -706,7 +706,11 @@ def click_item(item_category, arg1, arg2=-1):
             sel_items = [color]
         elif color in sel_items:
             if len(sel_items) == 1:
-                sel_items.append(color)
+                valid_moves = g.getValidMoves(board, player)
+                if valid_moves[75 + color]:
+                    sel_items.append(color)
+                else:
+                    reset_selection()
             elif len(sel_items) == 2 and sel_items[0] == sel_items[1] and sel_items[0] == color:
                 reset_selection()
             else:
