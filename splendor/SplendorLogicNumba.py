@@ -52,9 +52,13 @@ mask = np.array([128, 64, 32, 16, 8, 4, 2, 1], dtype=np.uint8)
 # When a card slot is empty (bank or player reserve), both lines are set to zero.
 
 ############################## ACTION DESCRIPTION #############################
-# We coded 81 actions, taking some shortcuts on combinations of gems that can be
-# got or that can be given back, and forbidding to simultaneously get gems and
-# give some back.
+# We coded 81 actions. Taking gems and returning excess gems are represented
+# as separate actions so the fixed action space remains checkpoint-compatible.
+# When a take brings a player above 10 gems, only return actions are legal and
+# the same player remains active until the excess has been returned.
+# In legacy token mode for a player, takes that would exceed 10 gems are invalid,
+# reserving at 10 gems grants no gold, actions 60-79 are voluntary full-turn
+# returns, and action 80 is only a pass.
 # Here is description of each action:
 ##### Index  Meaning
 #####   0    Buy 1st visible card (bottom left)
@@ -80,9 +84,8 @@ mask = np.array([128, 64, 32, 16, 8, 4, 2, 1], dtype=np.uint8)
 #####  ...
 #####   75   Give back 2 identical gems of color 0 = white
 #####  ...
-#####   80   No action, pass
-# List of combinations of gems for actions 30-79 are in variables
-# list_different_gems_up_to_2 and list_different_gems_up_to_3 in file SplendorLogic
+#####   80   No action/pass, or give back 1 gold during forced return
+# Lists of combinations for actions 30-79 are defined in SplendorLogic.
 
 
 def observation_size(num_players):
@@ -97,13 +100,13 @@ def my_random_choice(prob):
 
 def my_packbits(array):
 	product = np.multiply(array.astype(np.uint8), mask[:len(array)])
-	return product.sum()
+	return product.sum(dtype=np.uint8).view(np.int8)
 
 def my_unpackbits(value):
 	return (np.bitwise_and(value, mask) != 0).astype(np.uint8)
 
 def np_all_axis1(x):
-	out = np.ones(x.shape[0], dtype=np.bool8)
+	out = np.ones(x.shape[0], dtype=np.bool_)
 	for i in range(x.shape[1]):
 		out = np.logical_and(out, x[:, i])
 	return out
@@ -119,6 +122,7 @@ class Board():
 		self.max_moves = 62 * num_players
 		self.score_win = 15
 		self.state = np.zeros(observation_size(self.num_players), dtype=np.int8)
+		self.legacy_token_rules = np.zeros(n, dtype=np.bool_)
 		self.init_game()
 
 	def get_score(self, player):
@@ -149,18 +153,44 @@ class Board():
 
 	def get_state(self):
 		return self.state
+	def set_token_rules(self, legacy):
+		if np.isscalar(legacy):
+			self.legacy_token_rules[:] = bool(legacy)
+			return
+		profile = np.asarray(legacy, dtype=np.bool_).reshape(-1)
+		if profile.size != self.num_players:
+			raise ValueError("Token-rule profile length must match number of players")
+		self.legacy_token_rules[:] = profile
+
+	def _uses_legacy_token_rules(self, player):
+		return bool(self.legacy_token_rules[player])
+
+	def _overflow(self, player):
+		return max(int(self.players_gems[player].sum()) - 10, 0)
+
 
 	def valid_moves(self, player):
 		result = np.zeros(81, dtype=np.bool_)
+		overflow = self._overflow(player)
+		if overflow > 0:
+			result[60:75] = self._valid_give_gems(player, overflow)
+			result[75:80] = self._valid_give_gems_identical(player, overflow)
+			result[80] = self.players_gems[player][idx_gold] > 0
+			return result
+
 		result[0         :12]            = self._valid_buy(player)
 		result[12        :12+15]         = self._valid_reserve(player)
 		result[12+15     :12+15+3]       = self._valid_buy_reserve(player)
-		result[12+15+3   :12+15+3+30]    = np.concatenate((self._valid_get_gems(player) , self._valid_get_gems_identical(player)))
-		result[12+15+3+30:12+15+3+30+20] = np.concatenate((self._valid_give_gems(player), self._valid_give_gems_identical(player)))
-		result[80] = True #empty move
+		result[12+15+3   :12+15+3+30]    = np.concatenate((self._valid_get_gems(player), self._valid_get_gems_identical(player)))
+		if self._uses_legacy_token_rules(player):
+			# Returning gems is a voluntary full turn, capped at 2 gems like the old encoding
+			result[60:75] = self._valid_give_gems(player, 2)
+			result[75:80] = self._valid_give_gems_identical(player, 2)
+		result[80] = True # empty move
 		return result
 
 	def make_move(self, move, player, deterministic):
+		in_overflow = self._overflow(player) > 0
 		if   move < 12:
 			self._buy(move, player, deterministic)
 		elif move < 12+15:
@@ -171,10 +201,15 @@ class Board():
 			self._get_gems(move-12-15-3, player)
 		elif move < 12+15+3+30+20:
 			self._give_gems(move-12-15-3-30, player)
+		elif in_overflow:
+			self._give_gold(player)
 		else:
 			pass # empty move
-		self.bank[0][idx_points] += 1 # Count number of rounds
 
+		if self._overflow(player) > 0:
+			return player
+
+		self.bank[0][idx_points] += 1 # Count completed turns
 		return (player+1)%self.num_players
 
 	def copy_state(self, state, copy_or_not):
@@ -224,6 +259,9 @@ class Board():
 		_roll_in_place_axis0(self.players_nobles  , self.num_nobles*nb_swaps)
 		_roll_in_place_axis0(self.players_cards   , 1*nb_swaps)
 		_roll_in_place_axis0(self.players_reserved, 6*nb_swaps)
+		rules_copy = self.legacy_token_rules.copy()
+		for i in range(self.num_players):
+			self.legacy_token_rules[i] = rules_copy[(i+nb_swaps)%self.num_players]
 
 	def get_symmetries(self, policy, valid_actions):
 		def _swap_cards(cards, permutation):
@@ -360,7 +398,8 @@ class Board():
 				tier = i - 12
 				self.players_reserved[empty_slot:empty_slot+2] = self._get_deck_card(tier)
 		
-		if self.bank[0][idx_gold] > 0 and self.players_gems[player].sum() <= 9:
+		# Legacy rules: no gold when it would push the player above 10 gems
+		if self.bank[0][idx_gold] > 0 and not (self._uses_legacy_token_rules(player) and self.players_gems[player].sum() >= 10):
 			self.players_gems[player][idx_gold] += 1
 			self.bank[0][idx_gold] -= 1
 
@@ -387,16 +426,17 @@ class Board():
 	def _valid_get_gems(self, player):
 		gems = np_different_gems_up_to_3[:,:idx_gold]
 		enough_in_bank = np_all_axis1((self.bank[0][:idx_gold] - gems) >= 0)
-		not_too_many_gems = self.players_gems[player].sum() + gems.sum(axis=1) <= 10
-		result = np.logical_and(enough_in_bank, not_too_many_gems).astype(np.int8)
-		return result
+		if self._uses_legacy_token_rules(player):
+			fits_in_hand = (int(self.players_gems[player].sum()) + gems.sum(axis=1)) <= 10
+			return np.logical_and(enough_in_bank, fits_in_hand).astype(np.int8)
+		return enough_in_bank.astype(np.int8)
 
 	def _valid_get_gems_identical(self, player):
 		colors = np.arange(5)
 		enough_in_bank = self.bank[0][colors] >= 4
-		not_too_many_gems = self.players_gems[player].sum() + 2 <= 10
-		result = np.logical_and(enough_in_bank, not_too_many_gems).astype(np.int8)
-		return result
+		if self._uses_legacy_token_rules(player) and int(self.players_gems[player].sum()) + 2 > 10:
+			return np.zeros(5, dtype=np.int8)
+		return enough_in_bank.astype(np.int8)
 
 	def _get_gems(self, i, player):
 		if i < np_different_gems_up_to_3.shape[0]: # Different gems
@@ -408,13 +448,16 @@ class Board():
 		self.bank[0][:idx_gold] -= gems
 		self.players_gems[player][:idx_gold] += gems
 
-	def _valid_give_gems(self, player):
+	def _valid_give_gems(self, player, overflow):
 		gems = np_different_gems_up_to_2[:,:idx_gold]
-		result = np_all_axis1((self.players_gems[player][:idx_gold] - gems) >= 0).astype(np.int8)
-		return result
+		enough_gems = np_all_axis1((self.players_gems[player][:idx_gold] - gems) >= 0)
+		not_too_much = gems.sum(axis=1) <= overflow
+		return np.logical_and(enough_gems, not_too_much).astype(np.int8)
 
-	def _valid_give_gems_identical(self, player):
+	def _valid_give_gems_identical(self, player, overflow):
 		colors = np.arange(5)
+		if overflow < 2:
+			return np.zeros(5, dtype=np.int8)
 		return (self.players_gems[player][colors] >= 2).astype(np.int8)
 
 	def _give_gems(self, i, player):
@@ -426,6 +469,10 @@ class Board():
 			gems[color] = 2
 		self.bank[0][:idx_gold] += gems
 		self.players_gems[player][:idx_gold] -= gems
+	def _give_gold(self, player):
+		self.players_gems[player][idx_gold] -= 1
+		self.bank[0][idx_gold] += 1
+
 
 	def _give_nobles_if_earned(self, player):
 		for i_noble in range(self.num_nobles):

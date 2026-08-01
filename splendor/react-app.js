@@ -161,36 +161,48 @@ function PlayerPanel({ player, index, game, inspectReserved, reservedFocus, choo
   const overflow = current && (game.extra?.overflow_count || 0) > 0;
   const returnSelection = selected(game.extra, 'gemback') ? safe(game.extra.sel_items) : [];
   const returnOptions = safe(game.extra?.return_options);
-  const canReturn = (color, count) => overflow && human && count > 0 && canExtendTokenSelection(returnSelection, color, returnOptions, true);
+  const voluntaryReturns = current && human && !overflow && Boolean(game.extra?.legacy_token_profile?.[index]) && returnOptions.length > 0;
+  const returning = overflow || voluntaryReturns;
+  const canReturn = (color, count) => returning && human && count > 0 && canExtendTokenSelection(returnSelection, color, returnOptions, true);
   const arrivingGems = isActing ? safe(replay?.arriving_gems) : [];
   const arrivingBonus = isActing && replay?.type === 'buy' ? replay.card?.[0] : -1;
   const arrivingReserved = isActing && replay?.type === 'reserve' ? replay.reserved_index : -1;
   const visitorArrived = noble => isActing && safe(replay?.visitors).some(visitor => JSON.stringify(visitor) === JSON.stringify(noble));
-  return html`<article data-transit-anchor=${`player:${index}`} className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''} ${overflow ? 'is-returning' : ''}`}>
+  return html`<article data-transit-anchor=${`player:${index}`} className=${`player-panel ${current ? 'is-current' : ''} ${isThinking ? 'is-thinking' : ''} ${isActing ? 'is-acting' : ''} ${returning ? 'is-returning' : ''}`}>
     <header className="player-header">
       <div className="player-avatar"><${Icon} name=${human ? 'user' : 'bot'} size=${20}/><span className="presence"></span></div>
       <div><p>${index === 0 ? 'You' : human ? `Player ${index + 1}` : `AI ${index + 1}`}</p></div>
       <div className="score"><strong>${player.points}</strong><span>prestige</span></div>
     </header>
     ${overflow && human && html`<div className="overflow-prompt" role="status"><strong>Return ${game.extra.overflow_count} ${game.extra.overflow_count === 1 ? 'token' : 'tokens'}</strong><span>Select an eligible token below to continue your turn.</span></div>`}
+    ${voluntaryReturns && html`<div className="overflow-prompt"><strong>Optional token return</strong><span>Select an owned token below, then confirm to return it as your full turn.</span></div>`}
     <div className="player-assets">
       <div className="asset-row gems-owned">${safe(player.gems).map((count, idx) => html`<${Gem} key=${idx} anchor=${`player:${index}:gem:${idx}`} index=${idx} count=${count} compact arrival=${arrivingGems?.includes(idx)} active=${selected(game.extra, 'gemback', items => items.includes(idx)) ? (game.extra.sel_items[0] === game.extra.sel_items[1] ? 'double' : 'active') : ''} recent=${lastAction(game.extra, 'gemback', items => items?.includes(idx)) && index === game.extra?.previous_player} onClick=${canReturn(idx, count) ? () => game.act('click_and_render', 'gemback', idx) : null}/>`)} </div>
       <div className="asset-row bonuses-owned">${safe(player.cards).slice(0, 5).map((count, idx) => html`<div key=${idx} data-transit-anchor=${`player:${index}:bonus:${idx}`} className=${`bonus-stack bonus-${idx} ${arrivingBonus === idx ? 'inventory-arrival' : ''}`}><span>${count}</span></div>`)}</div>
-      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span>${reservedCards.map(({ card, cardIndex }) => html`<${ReservedInventoryCard} key=${`${cardIndex}-${card}`} card=${card} cardIndex=${cardIndex} playerIndex=${index} game=${game} focused=${reservedFocus?.playerIndex === index && reservedFocus?.cardIndex === cardIndex} inspect=${inspectReserved} choose=${chooseReservedCard} close=${closeReserved} arrival=${cardIndex === arrivingReserved}/>` )}</div>`}
+      ${reservedCards.length > 0 && html`<div className="reserved-row"><span className="reserved-label">Reserved</span><div className="reserved-cards" aria-label="Reserved cards">${reservedCards.map(({ card, cardIndex }) => html`<${ReservedInventoryCard} key=${`${cardIndex}-${card}`} card=${card} cardIndex=${cardIndex} playerIndex=${index} game=${game} focused=${reservedFocus?.playerIndex === index && reservedFocus?.cardIndex === cardIndex} inspect=${inspectReserved} choose=${chooseReservedCard} close=${closeReserved} arrival=${cardIndex === arrivingReserved}/>` )}</div></div>`}
       ${safe(player.nobles).length > 0 && html`<div className="player-nobles" aria-label="Visitors"><span className="reserved-label">Visitors</span>${safe(player.nobles).map((noble, nobleIndex) => html`<${Noble} key=${`${nobleIndex}-${noble}`} anchor=${`player:${index}:visitor:${JSON.stringify(noble)}`} noble=${noble} index=${nobleIndex} arrival=${visitorArrived(noble)}/>` )}</div>`}
     </div>
   </article>`;
 }
 
-function Settings({ game, open, close, changeAIPlayers }) {
+function Settings({ game, open, close, changeGameMode, changeAIPlayers, changeTokenRules }) {
   if (!open) return null;
+  const overflow = (game.extra?.overflow_count || 0) > 0;
+  const aiBusy = game.isThinking || game.isReplayingAIAction;
+  const rulesLocked = overflow || aiBusy;
+  const tokenRulesMode = ['official', 'legacy', 'split'].includes(game.extra?.token_rules_mode)
+    ? game.extra.token_rules_mode
+    : (game.extra?.legacy_token_rules ? 'legacy' : 'official');
+  const opponentLocked = tokenRulesMode === 'split' && rulesLocked;
   const playingAgainstAI = Boolean(game.arePlayersHuman?.[0] && game.arePlayersHuman.slice(1).some(isHuman => !isHuman));
-  return html`<div className="modal-backdrop" onClick=${close}><section className="settings-modal" onClick=${e => e.stopPropagation()}>
-    <button className="modal-close" onClick=${close}>×</button><span className="eyebrow">Game setup</span><h2>Shape your match</h2>
-    <label>Opponent<select value=${game.arePlayersHuman?.every(Boolean) ? 'Human' : game.arePlayersHuman?.[0] ? 'P0' : 'AI'} onChange=${e => game.setGameMode(e.target.value)}><option value="P0">Play against AI</option><option value="Human">Pass & play</option><option value="AI">Watch AI match</option></select></label>
+  return html`<div className="modal-backdrop" onClick=${close}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="game-settings-title" onClick=${e => e.stopPropagation()}>
+    <button className="modal-close" onClick=${close} aria-label="Close game setup">×</button><span className="eyebrow">Game setup</span><h2 id="game-settings-title">Shape your match</h2>
+    <label>Opponent<select value=${game.arePlayersHuman?.every(Boolean) ? 'Human' : game.arePlayersHuman?.[0] ? 'P0' : 'AI'} disabled=${opponentLocked} title=${opponentLocked ? 'Wait until token rules can be safely updated' : 'Choose who controls each seat'} onChange=${e => changeGameMode(e.target.value)}><option value="P0">Play against AI</option><option value="Human">Pass & play</option><option value="AI">Watch AI match</option></select></label>
     ${playingAgainstAI && html`<label>AI opponents<select value=${Math.max(1, numPlayers - 1)} aria-describedby="ai-player-count-help" onChange=${e => changeAIPlayers(Number(e.target.value))}><option value="1">1 AI opponent</option><option value="2">2 AI opponents</option><option value="3">3 AI opponents</option></select></label>`}
     ${playingAgainstAI && html`<small id="ai-player-count-help" className="settings-help">You occupy the first seat. Changing this starts a fresh match with the selected number of AI opponents.</small>`}
     <label>AI calculation<select value=${game.numMCTSSims} onChange=${e => { game.numMCTSSims = Number(e.target.value); game.changeDifficulty(); }}><option value="3">Quick</option><option value="12">Balanced</option><option value="25">Strategic</option><option value="100">Master</option><option value="400">Grandmaster</option></select></label>
+    <label>Token rules<select value=${tokenRulesMode} disabled=${rulesLocked} aria-describedby="token-rules-help" title=${overflow ? 'Return excess tokens before changing token rules' : aiBusy ? 'Wait for the AI to finish before changing token rules' : 'Choose how the 10-token limit is enforced'} onChange=${e => changeTokenRules(e.target.value)}><option value="official">Official for all</option><option value="legacy">Legacy for all</option><option value="split">Human official / AI legacy</option></select></label>
+    <small id="token-rules-help" className="settings-help">Official rules require excess-token returns; legacy rules cap takes at 10 and allow voluntary returns.${overflow ? ' Finish the required return first.' : aiBusy ? ' Wait for the AI to finish.' : ''}</small>
     <button className="primary-button" onClick=${() => { game.reset(); close(); }}><${Icon} name="reset"/> Start a fresh match</button>
   </section></div>`;
 }
@@ -223,6 +235,7 @@ function GemBank({ open, game, start, choose, confirm, close, replay }) {
     ${open && html`<div className="vertical-picker-actions"><button onClick=${close}>Cancel</button><button disabled=${!ready || game.isThinking} onClick=${confirm}>Take gems <span>→</span></button></div>`}
   </section>`;
 }
+
 const transitRectCache = new Map();
 
 function snapshotTransitAnchors() {
@@ -524,6 +537,12 @@ function App() {
     setReservedFocus(null);
   };
   const closeReserved = () => setReservedFocus(null);
+  const changeGameMode = async mode => {
+    await game.setGameMode(mode);
+    setCardFocus(null);
+    setGemPicker(false);
+    setReservedFocus(null);
+  };
   const changeAIPlayers = aiPlayers => {
     const opponentCount = Math.max(1, Math.min(3, Number(aiPlayers) || 1));
     const playerCount = opponentCount + 1;
@@ -537,6 +556,12 @@ function App() {
     const url = new URL(window.location.href);
     url.searchParams.set('players', String(playerCount));
     window.location.assign(url.toString());
+  };
+  const changeTokenRules = async mode => {
+    await game.setTokenRules(mode);
+    setCardFocus(null);
+    setGemPicker(false);
+    setReservedFocus(null);
   };
   const closeHistory = () => {
     setHistory(false);
@@ -585,7 +610,7 @@ function App() {
       <${ViewportTransit} event=${actionReplay}/>
       <${ActionReplay} event=${actionReplay} game=${game}/>
     </main>
-    <${Settings} game=${game} open=${settings} close=${() => setSettings(false)} changeAIPlayers=${changeAIPlayers}/>
+    <${Settings} game=${game} open=${settings} close=${() => setSettings(false)} changeGameMode=${changeGameMode} changeAIPlayers=${changeAIPlayers} changeTokenRules=${changeTokenRules}/>
     <${TurnHistory} game=${game} open=${history} close=${closeHistory}/>
   </div>`;
 }

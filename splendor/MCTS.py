@@ -36,6 +36,22 @@ class MCTS():
         self.last_cleaning = 0
         self.batch_info = batch_info
 
+    def _get_token_rules_context(self):
+        rules = getattr(self.game.board, 'legacy_token_rules', None)
+        if rules is None:
+            return None
+        return tuple(bool(value) for value in rules)
+
+    def _set_token_rules_context(self, context):
+        if context is not None:
+            self.game.board.set_token_rules(context)
+
+    def _state_key(self, canonicalBoard, context):
+        key = self.game.stringRepresentation(canonicalBoard)
+        if context is None:
+            return key
+        return key + b'|token-rules|' + bytes(int(value) for value in context)
+
     async def getActionProb(self, canonicalBoard, temp=1, force_full_search=False):
         """
         This function performs numMCTSSims simulations of MCTS starting from
@@ -45,15 +61,17 @@ class MCTS():
             probs: a policy vector where the probability of the ith action is
                    proportional to Nsa[(s,a)]**(1./temp)
         """
+        root_context = self._get_token_rules_context()
         is_full_search = force_full_search or (self.rng.random() < self.args.prob_fullMCTS)
         nb_MCTS_sims = self.args.numMCTSSims if is_full_search else self.args.numMCTSSims // self.args.ratio_fullMCTS
         forced_playouts = (is_full_search and self.args.forced_playouts)
         for self.step in range(nb_MCTS_sims):
             dir_noise = (self.step == 0 and is_full_search and self.dirichlet_noise)
-            await self.search(canonicalBoard, dirichlet_noise=dir_noise, forced_playouts=forced_playouts)
+            await self.search(canonicalBoard, dirichlet_noise=dir_noise, forced_playouts=forced_playouts, token_rules_context=root_context)
 
-        s = self.game.stringRepresentation(canonicalBoard)
-        counts = [self.nodes_data[s][5][a] for a in range(self.game.getActionSize())] # Nsa
+        self._set_token_rules_context(root_context)
+        s = self._state_key(canonicalBoard, root_context)
+        counts = [self.nodes_data[s][5][a] for a in range(self.game.getActionSize())]
 
         # Compute Q at root node
         q_player0 = self.nodes_data[s][7]
@@ -79,18 +97,21 @@ class MCTS():
                 self.last_cleaning = r
 
         if temp == 0:
-            bestAs = np.array(np.argwhere(counts == np.max(counts))).flatten()
+            counts_array = np.asarray(counts)
+            bestAs = np.flatnonzero(counts_array == counts_array.max())
             bestA = np.random.choice(bestAs)
             probs = [0] * len(counts)
             probs[bestA] = 1
+            self._set_token_rules_context(root_context)
             return probs, q, is_full_search
 
         counts = [x ** (1. / temp) for x in counts]
         counts_sum = float(sum(counts))
         probs = [x / counts_sum for x in counts]
+        self._set_token_rules_context(root_context)
         return probs, q, is_full_search
 
-    async def search(self, canonicalBoard, dirichlet_noise=False, forced_playouts=False):
+    async def search(self, canonicalBoard, dirichlet_noise=False, forced_playouts=False, token_rules_context=None):
         """
         This function performs one iteration of MCTS. It is recursively called
         till a leaf node is found. The action chosen at each node is one that
@@ -110,7 +131,8 @@ class MCTS():
             v: the negative of the value of the current canonicalBoard
         """
 
-        s = self.game.stringRepresentation(canonicalBoard)
+        self._set_token_rules_context(token_rules_context)
+        s = self._state_key(canonicalBoard, token_rules_context)
         Es, Vs, Ps, Ns, Qsa, Nsa, r, Qs = self.nodes_data.get(s, (None, )*8)
         if r is None:
             r = self.game.getRound(canonicalBoard)
@@ -154,7 +176,7 @@ class MCTS():
 
         # pick the action with the highest upper confidence bound
         # get next state and get canonical version of it
-        a, next_s, next_player = get_next_best_action_and_canonical_state(
+        a, next_s, next_player, next_token_rules_context = get_next_best_action_and_canonical_state(
             Es, Vs, Ps, Ns, Qsa, Nsa, Qs,
             self.args.cpuct,
             self.game.board,
@@ -162,9 +184,10 @@ class MCTS():
             forced_playouts,
             self.step,
             self.args.fpu,
+            token_rules_context,
         )
 
-        v = await self.search(next_s)
+        v = await self.search(next_s, token_rules_context=next_token_rules_context)
         v = np_roll(v, next_player)
 
         Qsa[a] = (Nsa[a] * Qsa[a] + v[0]) / (Nsa[a] + 1) # if Qsa[a] is NAN, then Nsa is zero
@@ -211,10 +234,12 @@ def pick_highest_UCB(Es, Vs, Ps, Ns, Qsa, Nsa, Qs, cpuct, forced_playouts, n_ite
     return best_act
 
 
-def get_next_best_action_and_canonical_state(Es, Vs, Ps, Ns, Qsa, Nsa, Qs, cpuct, gameboard, canonicalBoard, forced_playouts, n_iter, fpu):
+def get_next_best_action_and_canonical_state(Es, Vs, Ps, Ns, Qsa, Nsa, Qs, cpuct, gameboard, canonicalBoard, forced_playouts, n_iter, fpu, token_rules_context=None):
     a = pick_highest_UCB(Es, Vs, Ps, Ns, Qsa, Nsa, Qs, cpuct, forced_playouts, n_iter, fpu)
 
     # Do action 'a'
+    if token_rules_context is not None:
+        gameboard.set_token_rules(token_rules_context)
     gameboard.copy_state(canonicalBoard, True)
     next_player = gameboard.make_move(a, 0, deterministic=True)
     # next_s = gameboard.get_state()
@@ -224,8 +249,10 @@ def get_next_best_action_and_canonical_state(Es, Vs, Ps, Ns, Qsa, Nsa, Qs, cpuct
         # gameboard.copy_state(next_s, True)
         gameboard.swap_players(next_player)
     next_s = gameboard.get_state()
+    rules = getattr(gameboard, 'legacy_token_rules', None)
+    next_token_rules_context = None if rules is None else tuple(bool(value) for value in rules)
 
-    return a, next_s, next_player
+    return a, next_s, next_player, next_token_rules_context
 
 def normalise(vector):
     sum_vector = np.sum(vector)

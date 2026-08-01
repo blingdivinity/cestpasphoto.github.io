@@ -45,6 +45,19 @@ document.addEventListener('alpine:init', () => {
                 console.error("Action Error:", e);
             }
         },
+        async setTokenRules(mode) {
+            if (this.isLoading || this.isThinking || this.isReplayingAIAction || this.extra?.overflow_count > 0) return;
+            cancel_ai_handoff();
+
+            try {
+                const profile = this.arePlayersHuman.map(isHuman => !isHuman);
+                const json = pyProxy.handle_action("set_token_rules", mode, profile);
+                update_store(json);
+                check_ai_turn();
+            } catch (e) {
+                console.error("Token Rules Error:", e);
+            }
+        },
 
         toggleEdit() { handle_edit_toggle() },
         reset() { handle_reset() },
@@ -58,18 +71,24 @@ document.addEventListener('alpine:init', () => {
             pyProxy.changeDifficulty(this.numMCTSSims);
             persist_game_state();
         },
-        setGameMode(value) {
-            cancel_ai_handoff();
-            this.isTimelinePaused = false;
+        async setGameMode(value) {
             const modes = {
                 'P0':    Array.from({ length: numPlayers }, (_, i) => i === 0),
                 'P1':    Array.from({ length: numPlayers }, (_, i) => i === 1),
                 'Human': new Array(numPlayers).fill(true),
                 'AI':    new Array(numPlayers).fill(false),
             };
-            
-            if (modes[value]) {
-                this.arePlayersHuman = modes[value];
+            if (!modes[value]) return;
+            if (this.extra?.token_rules_mode === 'split'
+                && (this.isLoading || this.isThinking || this.isReplayingAIAction || this.extra?.overflow_count > 0)) return;
+
+            cancel_ai_handoff();
+            this.isTimelinePaused = false;
+            this.arePlayersHuman = modes[value];
+
+            if (this.extra?.token_rules_mode === 'split') {
+                await this.setTokenRules('split');
+            } else {
                 check_ai_turn();
                 persist_game_state();
             }

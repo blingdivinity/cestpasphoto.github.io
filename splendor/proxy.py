@@ -14,6 +14,68 @@ class dotdict(dict):
 action_sequence = 0
 action_event = None
 match_nonce = 0
+token_rules_mode = "official"
+legacy_token_profile = []
+legacy_token_rules = False
+
+# -------------------------------------------------------------------------
+# Token Rule Profile Helpers
+# -------------------------------------------------------------------------
+
+TOKEN_RULES_MODES = ("official", "legacy", "split")
+
+def _to_py(value):
+    """Unwrap a Pyodide JsProxy into plain Python data when needed."""
+    return value.to_py() if hasattr(value, "to_py") else value
+
+def _normalize_mode(mode):
+    """Accept mode names as well as the historical boolean/0-1 encoding."""
+    mode = _to_py(mode)
+    if isinstance(mode, str):
+        name = mode.strip().lower()
+        if name in TOKEN_RULES_MODES:
+            return name
+        if name in ("old", "true", "1"):
+            return "legacy"
+        return "official"
+    return "legacy" if bool(int(mode)) else "official"
+
+def _normalize_profile(mode, profile):
+    """Build the per-seat legacy flag list, or None when the input is invalid."""
+    count = int(g.num_players)
+    if mode == "official":
+        return [False] * count
+    if mode == "legacy":
+        return [True] * count
+    profile = _to_py(profile)
+    if profile is None or isinstance(profile, (str, bytes)):
+        return None
+    try:
+        flags = [bool(flag) for flag in profile]
+    except TypeError:
+        return None
+    if len(flags) != count:
+        return None
+    return flags
+
+def _apply_token_rules():
+    """Push the actual-seat profile onto the shared engine board."""
+    g.board.set_token_rules(list(legacy_token_profile))
+
+def _set_token_rules_state(mode, profile):
+    """Install a validated mode/profile pair and refresh derived globals."""
+    global token_rules_mode, legacy_token_profile, legacy_token_rules
+    token_rules_mode = mode
+    legacy_token_profile = list(profile)
+    legacy_token_rules = any(legacy_token_profile)
+    _apply_token_rules()
+
+def _player_legacy(seat):
+    """Legacy flag of one seat, tolerant of a not-yet-sized profile."""
+    seat = int(seat)
+    if 0 <= seat < len(legacy_token_profile):
+        return bool(legacy_token_profile[seat])
+    return bool(legacy_token_rules)
 
 # -------------------------------------------------------------------------
 # Core Engine Initialization & State Management
@@ -25,6 +87,11 @@ def init_game(numMCTSSims):
 
     g = Game()
     board = g.getInitBoard()
+    # Keep the configured rule mode across resets, resized to the new table.
+    retained = _normalize_profile(token_rules_mode, legacy_token_profile)
+    if retained is None:
+        retained = [_player_legacy(seat) for seat in range(int(g.num_players))]
+    _set_token_rules_state(token_rules_mode, retained)
 
     mcts_args = dotdict({
         'numMCTSSims'     : numMCTSSims,
@@ -63,13 +130,16 @@ def export_game_state():
             "boards": compressed_history,
         },
         "edit_mode": int(edit_mode),
+        "legacy_token_rules": bool(legacy_token_rules),
+        "token_rules_mode": str(token_rules_mode),
+        "legacy_token_profile": [bool(flag) for flag in legacy_token_profile],
         "action_sequence": int(action_sequence),
     }
     return json.dumps(payload, separators=(",", ":"))
 
 def restore_game_state(json_state):
     """Restore a previously serialized match after validating its shape."""
-    global board, player, history, edit_mode, action_sequence, action_event, match_nonce
+    global board, player, history, edit_mode, action_sequence, action_event, match_nonce, mcts
     payload = json.loads(json_state)
     version = int(payload.get("version", 0))
     if version not in (1, 2) or int(payload.get("num_players", -1)) != int(g.num_players):
@@ -100,6 +170,13 @@ def restore_game_state(json_state):
         boards = np.frombuffer(raw, dtype=board.dtype).reshape((count, *expected_shape))
         restored_history = [[int(players[i]), np.copy(boards[i]), int(actions[i])] for i in range(count)]
 
+    saved_mode = _normalize_mode(payload.get("token_rules_mode", payload.get("legacy_token_rules", False)))
+    saved_profile = _normalize_profile(saved_mode, payload.get("legacy_token_profile"))
+    if saved_profile is None:
+        # Split payload without a usable profile: fall back to the boolean encoding.
+        saved_mode = "legacy" if bool(payload.get("legacy_token_rules", False)) else "official"
+        saved_profile = _normalize_profile(saved_mode, None)
+    _set_token_rules_state(saved_mode, saved_profile)
     g.board.copy_state(restored_board, True)
     board = g.board.get_state()
     player = int(payload["player"])
@@ -108,6 +185,8 @@ def restore_game_state(json_state):
     action_sequence = max(int(payload.get("action_sequence", len(restored_history))), len(restored_history))
     action_event = None
     match_nonce = int(np.random.randint(1, 2**31))
+    if mcts is not None:
+        mcts.nodes_data.clear()
     reset_selection()
     return get_render_state()
 
@@ -121,6 +200,8 @@ def getNextState(action):
     # Applies a move to the board, advances the player turn, and saves history.
     global g, board, mcts, player, history, action_sequence, action_event
 
+    # MCTS canonicalization rotates the board profile, so restore actual seats.
+    _apply_token_rules()
     actor = int(player)
     action_sequence += 1
     action_event = _describe_action_event(int(action), actor, action_sequence)
@@ -392,9 +473,37 @@ def _get_last_action_details():
         combo_idx = last_move - 60
         gems = DIFFERENT_GEMS_UP_TO_2[combo_idx] if last_move < 75 else [last_move - 75, last_move - 75]
         return ["gemback", gems]
-    elif last_move == 80 and int(g.board.players_gems[int(history[0][0])].sum()) > 10:
-        return ["gemback", [5]]
+    elif last_move == 80:
+        actor, source_board, _ = history[0]
+        gems_row = 32 + g.num_players + int(actor)
+        if int(source_board[gems_row].sum()) > 10:
+            return ["gemback", [5]]
     return ["pass", []]
+
+def _overflowed_seats():
+    g.board.copy_state(board, False)
+    return {p for p in range(int(g.num_players)) if int(g.board.players_gems[p].sum()) > 10}
+
+def set_token_rules(mode, profile=None):
+    """Switch between official, legacy, and split (humans official / AI legacy) rules."""
+    wanted_mode = _normalize_mode(mode)
+    wanted_profile = _normalize_profile(wanted_mode, profile)
+    if wanted_profile is None:
+        # Malformed split profile: keep the current configuration untouched.
+        return get_render_state()
+
+    # Marking an overflowed seat legacy would let its >10 gem inventory survive
+    # and advance turns, so refuse the change and keep the current mode.
+    newly_legacy = {seat for seat, flag in enumerate(wanted_profile) if flag and not _player_legacy(seat)}
+    if newly_legacy and (newly_legacy & _overflowed_seats()):
+        return get_render_state()
+
+    if wanted_mode != token_rules_mode or wanted_profile != list(legacy_token_profile):
+        _set_token_rules_state(wanted_mode, wanted_profile)
+        if mcts is not None:
+            mcts.nodes_data.clear()
+        reset_selection()
+    return get_render_state()
 
 # -------------------------------------------------------------------------
 # Interaction Handlers (Pyodide Entrypoints)
@@ -414,6 +523,8 @@ def handle_action(action_name, *args):
         return get_render_state()
     elif action_name == "confirm_action":
         return confirm_action()
+    elif action_name == "set_token_rules":
+        return set_token_rules(args[0], args[1] if len(args) > 1 else None)
     elif action_name == "undo":
         if len(args) > 0:
             humans = args[0].to_py() if hasattr(args[0], 'to_py') else args[0]
@@ -525,7 +636,8 @@ def click_item(item_category, arg1, arg2=-1):
     overflow = max(0, int(g.board.players_gems[player].sum()) - 10)
     if overflow > 0 and item_category != 'gemback':
         return
-    if overflow == 0 and item_category == 'gemback':
+    # Legacy rules make returning gems a voluntary turn, so allow it outside overflow
+    if overflow == 0 and item_category == 'gemback' and not _player_legacy(player):
         return
     
     if item_category == 'gem':
@@ -614,6 +726,8 @@ def get_render_state():
     
     if g is None or board is None:
         return json.dumps({"viewData": {}, "extra": {}})
+
+    _apply_token_rules()
         
     num_players = g.num_players
 
@@ -706,6 +820,11 @@ def get_render_state():
         "return_options": return_options,
         "action_event": action_event,
         "turn_log": _get_turn_log(),
+        "legacy_token_rules": bool(legacy_token_rules),
+        "token_rules_mode": str(token_rules_mode),
+        "legacy_token_profile": [bool(flag) for flag in legacy_token_profile],
+        "current_player_legacy": _player_legacy(player),
+        "token_rules_locked": overflow_count > 0,
     }
 
     end_status = g.getGameEnded(board, player)
@@ -719,6 +838,9 @@ def get_render_state():
         "winners": winners if end_status[0] != 0 else [],
         "canUndo": len(history) > 0,
         "editMode": int(edit_mode),
+        "token_rules": str(token_rules_mode),
+        "token_rules_mode": str(token_rules_mode),
+        "legacy_token_profile": [bool(flag) for flag in legacy_token_profile],
     }
     
     return json.dumps(response)
